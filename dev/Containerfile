@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-License-Identifier: Artistic-2.0
+#
+# Bioconductor base image already ships R + many BioC packages.
+FROM docker.io/bioconductor/bioconductor_docker:devel
+
+ENV R_LIBS_USER=/usr/local/lib/R/site-library
+
+RUN R --no-save -e 'BiocManager::install(c( \
+        "illuminaio", \
+        "BiocParallel", \
+        "DelayedArray", \
+        "HDF5Array", \
+        "DelayedMatrixStats", \
+        "SummarizedExperiment", \
+        "GenomicRanges", \
+        "Biostrings", \
+        "bumphunter", \
+        "beanplot", \
+        "nor1mix", \
+        "siggenes", \
+        "limma", \
+        "preprocessCore", \
+        "mclust", \
+        "genefilter", \
+        "quadprog", \
+        "data.table", \
+        "GEOquery", \
+        "reshape", \
+        "minfiData", \
+        "IlluminaHumanMethylation450kmanifest", \
+        "IlluminaHumanMethylation450kanno.ilmn12.hg19", \
+        "IlluminaHumanMethylationEPICmanifest", \
+        "IlluminaHumanMethylationEPICanno.ilm10b4.hg19", \
+        "minfiDataEPIC", \
+        "bigmelon", \
+        "wateRmelon", \
+        "FlowSorted.Blood.450k", \
+        "covr", \
+        "lintr" \
+    ), ask = FALSE, update = FALSE)'
+
+WORKDIR /workspace

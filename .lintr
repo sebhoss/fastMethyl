@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-License-Identifier: Artistic-2.0
+#
+# Two default linters are disabled:
+#   object_usage_linter  - needs the package namespace loadable, which it is
+#                          not in the lightweight lint CI job.
+#   object_name_linter   - the package's public API is camelCase / dotted.case
+#                          by design (read.metharray, process.metharray,
+#                          pipeline.preprocess), matching minfi, so it cannot be
+#                          satisfied without breaking the API.
+linters: linters_with_defaults(
+    line_length_linter = line_length_linter(120L),
+    object_usage_linter = NULL,
+    object_name_linter = NULL
+  )

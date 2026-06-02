@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-License-Identifier: Artistic-2.0
+#
+# Checks that every file carries SPDX licensing information (inline header or a
+# REUSE.toml entry) per the REUSE specification (https://reuse.software).
+
+name: REUSE compliance
+
+on:
+  push:
+    branches: [main, devel]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reuse:
+    name: REUSE lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fsfe/reuse-action@v5

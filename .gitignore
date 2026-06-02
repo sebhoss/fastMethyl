@@ -1,0 +1,22 @@
+.Rproj.user
+.idea/
+*.tar.gz
+*.Rcheck/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+.ilo.rc
+inst/doc
+/dev/scratch/
+
+# Generated test/pipeline data. Tests write GDS files + build-key sidecars under
+# tempdir() (already outside the repo); dev/benchmark + pipeline runs write them
+# under dev/scratch/ (ignored above). These globs are a belt-and-suspenders
+# guard so a GDS or raw IDAT written anywhere in the tree -- e.g. a pipeline run
+# launched from the repo root -- can never be accidentally committed. fastMethyl
+# neither ships nor commits GDS or IDAT files.
+*.gds
+*.gds.buildkey.rds
+*.idat
+*.idat.gz

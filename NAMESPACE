@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-License-Identifier: Artistic-2.0
+#
+# Hand-maintained (not roxygen-generated). The exported readMethArray* names
+# deliberately shadow minfi's, so they are NOT imported from minfi.
+
+export(readMethArray)
+export(readMethArrayExp)
+export(readMethArraySheet)
+export(processMethArray)
+export(processMethArrayExp)
+export(runPreprocess)
+export(analyze)
+
+importFrom(minfi,
+           getProbeInfo, getManifest, getManifestInfo, getControlAddress,
+           getAnnotation, RGChannelSet, RGChannelSetExtended)
+importClassesFrom(minfi, RGChannelSet, RGChannelSetExtended)
+
+importFrom(BiocParallel,
+           SerialParam, bplapply, bpnworkers, bpmapply, bptry, bpok)
+importFrom(gdsfmt, createfn.gds, add.gdsn, closefn.gds, addfolder.gdsn,
+           put.attr.gdsn, append.gdsn, readmode.gdsn, index.gdsn,
+           objdesp.gdsn, read.gdsn, delete.gdsn, rename.gdsn)
+importFrom(illuminaio, readIDAT)
+importFrom(DelayedArray, realize, getAutoRealizationBackend)
+importFrom(SummarizedExperiment, "colData<-")
+importFrom(S4Vectors, DataFrame)
+importClassesFrom(S4Vectors, DataFrame)
+importFrom(methods, as, is)
+importFrom(stats, median, mad, pnorm)
+importFrom(utils, read.csv, object.size, head, packageVersion)

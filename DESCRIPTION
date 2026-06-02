@@ -1,0 +1,44 @@
+Package: fastMethyl
+Title: Fast, Parallel Preprocessing of Illumina Methylation Arrays
+Version: 0.99.0
+Authors@R:
+    person("Sebastian", "Hoss", email = "sebhoss@gmail.com",
+           role = c("aut", "cre"))
+Description: A performance layer over minfi and bigmelon for large Illumina
+    methylation cohorts. Provides parallel IDAT reading with an integer-indexed
+    worker assembly hot path, and a fused per-sample streaming pipeline that
+    runs read + detection p-value + raw preprocessing + sample/probe quality
+    control in a single pass, writing an LZ4_RA-compressed, bigmelon-compatible
+    GDS file. The runPreprocess() entry point validates every input
+    up front and emits a QC'd GDS ready for downstream normalization and
+    analysis.
+License: Artistic-2.0
+Encoding: UTF-8
+URL: https://github.com/sebhoss/fastMethyl
+BugReports: https://github.com/sebhoss/fastMethyl/issues
+biocViews: DNAMethylation, Preprocessing, Normalization, QualityControl,
+    TwoChannel, Microarray, MethylationArray, Epigenetics
+Depends:
+    R (>= 4.3.0)
+Imports:
+    minfi,
+    gdsfmt,
+    BiocParallel,
+    illuminaio,
+    S4Vectors,
+    SummarizedExperiment,
+    DelayedArray,
+    methods,
+    stats,
+    utils,
+    tools
+Suggests:
+    bigmelon,
+    minfiData,
+    minfiDataEPIC,
+    IlluminaHumanMethylation450kanno.ilmn12.hg19,
+    IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
+Config/testthat/edition: 3

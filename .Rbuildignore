@@ -1,0 +1,10 @@
+^CLAUDE\.md$
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.idea$
+^\.github$
+^dev$
+^REUSE\.toml$
+^LICENSES$
+^\.lintr$
+^\.ilo\.rc$

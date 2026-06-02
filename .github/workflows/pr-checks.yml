@@ -1,0 +1,175 @@
+# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-License-Identifier: Artistic-2.0
+#
+# CI for fastMethyl. Five jobs:
+#   lint              - lintr over R/ (config in repo-root .lintr)
+#   R-CMD-check       - rcmdcheck; runs the test suite (integration auto-skips)
+#   bioc-check        - BiocCheck (Bioconductor-specific, advisory)
+#   test-integration  - the real-IDAT tier (FASTMETHYL_RUN_INTEGRATION=1)
+#   coverage          - covr + Codecov upload
+#
+# The Bioc jobs run in the Bioconductor devel image; r-lib/actions installs and
+# caches the declared dependencies (minfi, bigmelon, the data packages, ...).
+
+name: PR checks
+
+on:
+  push:
+    branches: [main, devel]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Install lintr
+        run: Rscript -e 'install.packages("lintr")'
+
+      # The whole R/ tree is linted; configuration lives in the repo-root
+      # .lintr (object_usage_linter / object_name_linter disabled there).
+      - name: Lint
+        run: |
+          Rscript -e '
+            l <- lintr::lint_dir("R")
+            print(l)
+            if (length(l) > 0L) {
+              stop(sprintf("lintr reported %d lint(s)", length(l)))
+            }
+          '
+
+  R-CMD-check:
+    name: R CMD check
+    runs-on: ubuntu-latest
+    container: bioconductor/bioconductor_docker:devel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"all"'
+          extra-packages: any::rcmdcheck
+          needs: check
+
+      # Runs tests/testthat.R (test_check). The integration tier skips because
+      # FASTMETHYL_RUN_INTEGRATION is unset here.
+      - name: rcmdcheck
+        run: |
+          Rscript -e '
+            rcmdcheck::rcmdcheck(
+              args         = c("--no-manual", "--ignore-vignettes"),
+              build_args   = c("--no-build-vignettes"),
+              error_on     = "error",
+              check_dir    = "check"
+            )
+          '
+
+      - name: Upload check artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rcmdcheck-results
+          path: check
+          retention-days: 7
+
+  bioc-check:
+    name: BiocCheck (advisory)
+    runs-on: ubuntu-latest
+    container: bioconductor/bioconductor_docker:devel
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"all"'
+          extra-packages: bioc::BiocCheck
+
+      - name: BiocCheck
+        run: Rscript -e 'BiocCheck::BiocCheck(".")'
+
+  test-integration:
+    name: tests (integration)
+    runs-on: ubuntu-latest
+    container: bioconductor/bioconductor_docker:devel
+    # Gate the slow, data-package-heavy integration tier behind R CMD check
+    # (which has already run the pure + unit tests).
+    needs: R-CMD-check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"all"'
+          extra-packages: any::testthat
+
+      - name: Install fastMethyl
+        run: R CMD INSTALL .
+
+      - name: Integration tests (FASTMETHYL_RUN_INTEGRATION=1)
+        env:
+          FASTMETHYL_RUN_INTEGRATION: "1"
+        run: |
+          Rscript -e '
+            suppressPackageStartupMessages({
+              library(testthat); library(SummarizedExperiment)
+              library(minfi); library(fastMethyl)
+            })
+            testthat::test_dir("tests/testthat", filter = "integration",
+                               stop_on_failure = TRUE)
+          '
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    container: bioconductor/bioconductor_docker:devel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"all"'
+          extra-packages: any::covr
+
+      - name: covr
+        env:
+          FASTMETHYL_RUN_INTEGRATION: "1"
+        run: |
+          Rscript -e '
+            cov <- covr::package_coverage(quiet = FALSE)
+            print(cov)
+            covr::to_cobertura(cov, "cobertura.xml")
+          '
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: cobertura.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
