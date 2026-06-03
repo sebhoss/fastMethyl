@@ -64,8 +64,8 @@ analyze <- function(..., FUN = NULL,
   vlog("preprocessing complete: GDS %s (%s); %s",
        res$gds_path, .path_size(res$gds_path), .mem_report())
 
-  # No FUN: preprocessing already built and closed the GDS, so just return its
-  # path + metadata.
+  # No FUN: preprocessing already built and closed the GDS, so just hand back
+  # its path and metadata.
   if (is.null(FUN)) {
     return(invisible(res))
   }
