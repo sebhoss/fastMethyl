@@ -38,6 +38,31 @@ adds a single, fast, memory-bounded entry point: **`analyze()`**.
 control their order — the statistically correct one being **outliers first,
 then normalise**. Omit the function to just get the QC'd GDS.
 
+## Benchmark
+
+The streaming preprocessing inside `analyze()` is where the speed comes from.
+All timings on a 16-core Linux box with `MulticoreParam(workers = 4)`.
+*Upstream* is the released Bioconductor minfi pipeline; *fastMethyl* is the same
+work done in `analyze()`'s fused, column-streaming pass. Outputs are
+equivalence-verified (the GDS is value-identical) before timings are reported.
+
+Full IDAT → fully-QC'd GDS: `read.metharray()` + `detectionP()` +
+`preprocessRaw()` + sample/probe QC + `bigmelon::es2gds()` (upstream) vs the
+single streaming pass (fastMethyl).
+
+| Sample count | Upstream pipeline | fastMethyl | Speedup   |
+|--------------|-------------------|------------|-----------|
+| 30           | 87.9 s            | 15.1 s     | **5.8×**  |
+| 100          | 267.5 s           | 24.8 s     | **10.8×** |
+| 200          | 537.3 s           | 42.1 s     | **12.8×** |
+
+The speedup *grows* with cohort size because the upstream pipeline's dominant
+phase (`detectionP()`) scales linearly in the master process while fastMethyl
+keeps it inside the parallel per-sample loop. Extrapolated to 1000 samples:
+~45 min upstream → ~4 min with fastMethyl — and, unlike the upstream pipeline,
+peak memory stays bounded regardless of cohort size (a real 582-sample EPIC
+cohort ran the full pipeline in ~14.6 GB; see the Notice above).
+
 ## Installation
 
 ### Requirements
