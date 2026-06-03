@@ -114,13 +114,32 @@ else, open an issue at <https://github.com/sebhoss/fastMethyl/issues>.
 ### Run a full analysis (supply a closure)
 
 `analyze()` builds the GDS, runs your function on the open handle, and closes
-the GDS even if your code errors. Your function receives the open handle `gds`
-and the preprocessing result `res` (`gds_path`, the post-QC `targets`
-samplesheet, and the keep masks). Do the normalisation and outlier detection
-**inside** your function, in the right order — **`outlyx` on the raw betas
-first, then `dasen`** (dasen can mask the technical artefacts `outlyx` keys on,
-and removing flagged samples first keeps them out of dasen's quantile
-reference):
+the GDS even if your code errors.
+
+**Your function is `function(gds, res)`** — it receives two arguments:
+
+- **`gds`** — the **open GDS handle** (a gdsfmt `gds.class` object), opened
+  read-write. This is the bigmelon-compatible GDS, so you operate on it with
+  `bigmelon`/`gdsfmt`: `dasen()`, `outlyx()`, `prcomp()`,
+  `estimateCellCounts.gds()`, `index.gdsn()` / `read.gdsn()`, etc. Its nodes are
+  `betas`, `methylated`, `unmethylated`, `pvals` (the raw QC'd data) plus
+  `fData` / `pData` / `history` / `paths`; anything you add (e.g. a `normbetas`
+  node from `dasen`) persists in the file. **Do not return `gds`** — it is
+  closed by the time `analyze()` returns; return materialised results instead
+  (matrices, data.frames, model objects).
+- **`res`** — the preprocessing result, a list with:
+  - `res$gds_path` — path to the GDS file on disk;
+  - `res$targets` — the post-QC samplesheet (a data.frame, one row per
+    surviving sample, in GDS column order);
+  - `res$keepSamples` — logical vector marking which input samples passed
+    sample-level QC;
+  - `res$keepProbes` — logical vector marking which probes passed probe-level
+    QC (or `NULL` when no probe threshold was applied).
+
+Do the normalisation and outlier detection **inside** your function, in the
+right order — **`outlyx` on the raw betas first, then `dasen`** (dasen can mask
+the technical artefacts `outlyx` keys on, and removing flagged samples first
+keeps them out of dasen's quantile reference):
 
 ```r
 library(fastMethyl)
