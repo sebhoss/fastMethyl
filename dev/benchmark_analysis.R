@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-FileCopyrightText: The fastMethyl authors
 # SPDX-License-Identifier: Artistic-2.0
 #
 # Profiler for the GDS analysis phase (bigmelon::dasen and bigmelon::outlyx)

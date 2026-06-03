@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: 2026 The fastMethyl authors
+SPDX-FileCopyrightText: The fastMethyl authors
 SPDX-License-Identifier: Artistic-2.0
 -->
 
@@ -13,34 +13,42 @@ code in this repository.
 `fastMethyl` is a standalone R/Bioconductor package — a **performance layer over
 minfi and bigmelon** for large Illumina methylation cohorts. It does not
 reimplement or vendor either dependency: it imports them and adds faster paths
-for the steps that dominate runtime and memory. The public API is camelCase
-(Bioconductor convention), deliberately shadowing the minfi reader names.
+for the steps that dominate runtime and memory.
 
-Exported functions (`NAMESPACE` is hand-maintained, not roxygen-generated):
+**`analyze()` (`R/analyze.R`) is the sole exported function** (`NAMESPACE` is
+hand-maintained, not roxygen-generated). It is a loan-pattern driver: one call
+runs the preprocessing pipeline, optionally hands the open GDS handle to a
+user-supplied `FUN`, and **guarantees the GDS is closed** on normal return and
+on error (via `on.exit`, not the closure). `FUN` is optional —
+`analyze(..., FUN = NULL)` just builds the QC'd GDS and returns its path +
+metadata, subsuming the old `runPreprocess()` public role. It is deliberately
+unopinionated about the analysis: **normalisation (dasen) and outlier detection
+(outlyx) both live in `FUN`**, where the caller controls their order (correct
+order: outlyx on raw betas first, then dasen). `analyze()` itself does no
+normalisation. The heavy operations are dependency-injected
+(`.preprocess`/`.open`/`.close`) so the control flow is unit-testable without
+IDATs/minfi/gdsfmt/bigmelon.
+
+Everything `analyze()` composes is **internal** (defined in `R/`, reached from
+tests via `fastMethyl:::` or the bare-name bindings in `helper-internals.R`):
 
 - `readMethArray()` / `readMethArrayExp()` / `readMethArraySheet()`
   (`R/read-meth.R`) — minfi-compatible IDAT readers with a `BPPARAM=` argument
   for parallel reading and an integer-indexed worker assembly hot path
-  (~11× faster than the serial upstream reader on large cohorts). Return minfi
-  `RGChannelSet` objects.
+  (~11× faster than the serial upstream reader). Return minfi `RGChannelSet`s.
+  Internal API is camelCase (Bioconductor convention).
 - `processMethArray()` / `processMethArrayExp()` (`R/read-meth-streaming.R`) —
   the fused, column-streaming pipeline: read + detectionP + preprocessRaw +
   es2gds + sample/probe QC in one pass that writes a bigmelon-compatible GDS
   **without ever assembling a full cohort-sized matrix in RAM**.
-  `processMethArrayExp()` is the experiment-level wrapper (samplesheet + base
-  dir + annotation package).
-- `runPreprocess()` (`R/pipeline-preprocess.R`) — the one validated entry
-  point: config in, QC'd GDS out. `.validateArgs()` checks every input up front
-  (types, ranges, file existence, annotation-package availability, samplesheet
-  structure, IDAT presence, cross-reactive CSV structure) before any IDAT byte
-  is read, and a build-key sidecar caches results so re-runs that change
-  thresholds/inputs rebuild instead of silently reusing a stale GDS.
-- `analyze()` (`R/analyze.R`) — the recommended high-level driver: a loan
-  pattern that runs `runPreprocess`, opens the GDS, optionally normalises it
-  (dasen), hands the open handle to a user-supplied `FUN`, and **guarantees the
-  GDS is closed** on normal return and on error (via `on.exit`, not the
-  closure). The heavy operations are dependency-injected so the control flow is
-  unit-testable without IDATs/minfi/gdsfmt/bigmelon.
+  `processMethArrayExp()` is the experiment-level wrapper.
+- `runPreprocess()` (`R/pipeline-preprocess.R`) — the validated config-in /
+  QC'd-GDS-out step `analyze()`'s default `.preprocess` calls. `.validateArgs()`
+  checks every input up front (types, ranges, file existence, annotation-package
+  availability, samplesheet structure, IDAT presence, cross-reactive CSV
+  structure) before any IDAT byte is read, and a build-key sidecar caches
+  results so re-runs that change thresholds/inputs rebuild instead of silently
+  reusing a stale GDS.
 
 Supporting internals: `R/minfi-internals.R` (small pure minfi helpers
 reproduced so the package needs only minfi's public API), `R/parallel-helpers.R`

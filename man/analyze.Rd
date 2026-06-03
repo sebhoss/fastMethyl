@@ -1,77 +1,94 @@
 \name{analyze}
 \alias{analyze}
 \title{
-  Preprocess, open, normalise, and run an analysis on a GDS with guaranteed cleanup.
+  Preprocess an Illumina methylation cohort and (optionally) analyse it, with
+  guaranteed GDS cleanup.
 }
 \description{
-  A one-call entry point that runs \code{\link{runPreprocess}}, opens the
-  resulting GDS, optionally normalises it (\code{dasen}), hands the open handle
-  to a user-supplied function \code{FUN}, and \strong{guarantees the GDS is
-  closed afterwards} -- on normal return and on error -- before returning
-  \code{FUN}'s value.
+  The package's single entry point. One call validates the inputs and builds a
+  QC'd, LZ4_RA-compressed, bigmelon-compatible GDS from raw IDATs, optionally
+  hands the open GDS handle to a user-supplied function \code{FUN}, and
+  \strong{guarantees the GDS is closed afterwards} -- on normal return and on
+  error.
 
-  This is the "loan pattern": you supply a closure describing what to do with
-  the data; \code{analyze} owns the lifecycle. The close guarantee comes from
-  \code{\link[base]{on.exit}}, so a leftover open handle can never block the
-  next run, even if your analysis errors.
+  With \code{FUN} supplied this is the "loan pattern": you provide a closure
+  describing the analysis and \code{analyze} owns the resource lifecycle, so a
+  leftover open handle can never block the next run even if your analysis
+  errors (the close comes from \code{\link[base]{on.exit}}). With \code{FUN}
+  omitted, \code{analyze} simply builds the GDS and returns its path and
+  metadata.
+
+  \code{analyze} is deliberately unopinionated about what to do with the GDS:
+  normalisation (\code{dasen}) and outlier detection (\code{outlyx}) both live
+  in \code{FUN}, where you control their order. The statistically correct order
+  is \code{outlyx} on the raw betas \emph{first}, then \code{dasen} -- see
+  Examples.
 }
 \usage{
-analyze(..., FUN, normalize = TRUE, normNode = "normbetas",
+analyze(..., FUN = NULL,
         .preprocess = runPreprocess,
         .open = function(p) gdsfmt::openfn.gds(p, readonly = FALSE),
-        .close = gdsfmt::closefn.gds,
-        .normalize = .dasenNormalize)
+        .close = gdsfmt::closefn.gds)
 }
 \arguments{
-  \item{\dots}{Arguments forwarded to \code{\link{runPreprocess}}
-    (\code{dataDirectory}, \code{nonSpecificProbesPath}, \code{targetPattern},
-    \code{datasetClass}, \code{annotationPackage}, ...).}
-  \item{FUN}{A function \code{function(gds, res)} run with the open GDS handle
-    (\code{gds}) and the \code{runPreprocess} result list (\code{res}: see its
+  \item{\dots}{The preprocessing inputs: \code{dataDirectory},
+    \code{nonSpecificProbesPath}, \code{targetPattern}, \code{datasetClass},
+    \code{annotationPackage}, and optionally \code{sampleDetPThreshold},
+    \code{probeDetPThreshold}, \code{forceRebuild}, \code{readerWorkers},
+    \code{BPPARAM}, and \code{verbose} (\code{0L}/\code{1L}/\code{2L};
+    \code{2L} logs each external-data step with on-disk size and a memory
+    snapshot).}
+  \item{FUN}{Optional. A function \code{function(gds, res)} run with the open
+    GDS handle (\code{gds}) and the preprocessing result list (\code{res}, see
     Value). Its return value becomes \code{analyze}'s return value. It must
     return \emph{materialised} results (matrices, data.frames, model objects),
     not the open \code{gds} handle -- the handle is closed by the time
-    \code{analyze} returns.}
-  \item{normalize}{If \code{TRUE} (default), run the normaliser into
-    \code{normNode} before calling \code{FUN}.}
-  \item{normNode}{GDS node the normalised betas are written to. Default
-    \code{"normbetas"}.}
-  \item{.preprocess, .open, .close, .normalize}{Injection points for the heavy
-    operations, defaulting to the production implementations
-    (\code{runPreprocess}; \code{openfn.gds} read-write; \code{closefn.gds}; an
-    internal \code{dasen} wrapper that requires \pkg{bigmelon}). Exposed so the
+    \code{analyze} returns. If omitted (\code{NULL}), \code{analyze} does no
+    analysis and returns \code{res}.}
+  \item{.preprocess, .open, .close}{Injection points for the heavy operations,
+    defaulting to the production implementations (the internal preprocessing
+    pipeline; \code{openfn.gds} read-write; \code{closefn.gds}). Exposed so the
     control flow can be unit-tested without IDATs or Bioconductor packages;
     production callers should not pass these.}
 }
 \value{
-  Whatever \code{FUN} returns.
+  When \code{FUN} is supplied, whatever \code{FUN} returns. When \code{FUN} is
+  omitted, invisibly a list with \code{gds_path} (the QC'd GDS), \code{targets}
+  (the post-QC samplesheet), \code{keepSamples}, and \code{keepProbes}.
 }
 \details{
-  Equivalent in spirit to the shipped example pipeline, but reusable: the
-  fixed preamble (preprocess, open, normalise, guaranteed close) is owned by
-  \code{analyze}, and the study-specific analysis lives in \code{FUN}.
-
-  \code{normalize = TRUE} requires the \pkg{bigmelon} package; without it,
-  either install bigmelon or pass \code{normalize = FALSE} and normalise inside
-  \code{FUN}.
+  A worked example pipeline ships with the package; retrieve it with
+  \code{system.file("scripts", "pipeline.R", package = "fastMethyl")}.
 }
 \examples{
 \dontrun{
-pcs <- analyze(
+library(bigmelon)   # dasen / outlyx / prcomp on the open GDS
+
+# Full analysis: outlier detection on the RAW betas first, then dasen, then
+# PCA. The GDS is closed for you afterwards, even if FUN errors.
+res <- analyze(
   dataDirectory         = "/path/to/idats",
   nonSpecificProbesPath = "/path/to/cross-reactive.csv",
   targetPattern         = "batch1",
   datasetClass          = "my_study",
-  annotationPackage     = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
+  annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
   FUN = function(gds, res) {
-    prcomp(gds, node.name = "normbetas", method = "quick")
+    outliers <- outlyx(gds, plot = FALSE)              # 1. detect on raw betas
+    dasen(gds, node = "normbetas")                     # 2. normalise
+    pca <- prcomp(gds, node.name = "normbetas", method = "quick")  # 3. analyse
+    list(outliers = outliers, pca = pca)
   })
-# `pcs` is the PCA result; the GDS is already closed.
+
+# Just build the QC'd GDS (no analysis):
+res <- analyze(
+  dataDirectory         = "/path/to/idats",
+  nonSpecificProbesPath = "/path/to/cross-reactive.csv",
+  targetPattern         = "batch1",
+  datasetClass          = "my_study",
+  annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19")
+res$gds_path   # path to the QC'd GDS
 }
 }
 \author{
   Sebastian Hoss.
-}
-\seealso{
-  \code{\link{runPreprocess}} for the preprocessing it wraps.
 }

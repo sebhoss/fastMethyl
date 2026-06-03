@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-FileCopyrightText: The fastMethyl authors
 # SPDX-License-Identifier: Artistic-2.0
 #
 # Small minfi internal helpers that fastMethyl depends on but minfi does not

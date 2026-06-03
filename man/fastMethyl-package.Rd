@@ -12,28 +12,18 @@
   on big cohorts.
 }
 \details{
-  Two tiers of functionality:
+  The single public entry point is \code{\link{analyze}}. One call validates
+  the inputs and builds a QC'd, LZ4_RA-compressed, bigmelon-compatible GDS from
+  raw IDATs -- a fused, column-streaming pass (read + detection p-value + raw
+  preprocessing + sample/probe QC) whose peak memory stays bounded regardless
+  of cohort size -- then optionally normalises it (\code{dasen}), optionally
+  runs a user-supplied analysis function on the open GDS, and closes the GDS
+  for you. Omitting that function makes \code{analyze} simply build (and
+  optionally normalise) the GDS and return its path.
 
-  \strong{Preprocessing.}
-  \itemize{
-    \item \code{\link{readMethArray}} / \code{\link{readMethArrayExp}} --
-      minfi-compatible IDAT readers with a \code{BPPARAM=} argument for
-      parallel reading and an integer-indexed worker assembly hot path.
-    \item \code{\link{processMethArray}} -- a fused per-sample pass (read +
-      detection p-value + raw preprocessing + sample/probe QC) written once to
-      an LZ4_RA-compressed, bigmelon-compatible GDS file.
-    \item \code{\link{processMethArrayExp}} -- the experiment-level wrapper
-      (samplesheet + base dir + annotation package).
-    \item \code{\link{runPreprocess}} -- one validated entry point:
-      config in, QC'd GDS out, with a build-key cache so re-runs that change
-      thresholds or inputs rebuild instead of silently reusing a stale GDS.
-  }
-
-  The downstream analysis (normalisation, outlier detection, PCA, cell
-  composition) runs on the resulting GDS via \pkg{bigmelon} directly; see the
-  example pipeline.
-
-  A worked example pipeline ships with the package; retrieve it with
+  The downstream analysis (outlier detection, PCA, cell composition) runs on
+  the resulting GDS via \pkg{bigmelon} directly; see the example pipeline,
+  retrievable with
   \code{system.file("scripts", "pipeline.R", package = "fastMethyl")}.
 }
 \author{
@@ -41,6 +31,6 @@
   contributors).
 }
 \seealso{
-  \code{\link{runPreprocess}}, \code{\link{processMethArray}}.
+  \code{\link{analyze}}.
 }
 \keyword{package}

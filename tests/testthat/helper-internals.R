@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-FileCopyrightText: The fastMethyl authors
 # SPDX-License-Identifier: Artistic-2.0
 #
 # Expose fastMethyl's non-exported helpers by bare name so the test files can
@@ -33,8 +33,15 @@
   ".currentBuildKey",
   ".compareBuildKey",
   ".withGds",
-  ".dasenNormalize",
-  "processMethArrayExp"
+  # No longer exported (analyze() is the sole public entry point), but the tests
+  # exercise the preprocessing machinery directly, so expose it here by bare
+  # name -- the same mechanism used for the dotted internals above.
+  "readMethArray",
+  "readMethArrayExp",
+  "readMethArraySheet",
+  "processMethArray",
+  "processMethArrayExp",
+  "runPreprocess"
 )
 
 .fm_ns <- asNamespace("fastMethyl")

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-FileCopyrightText: The fastMethyl authors
 # SPDX-License-Identifier: Artistic-2.0
 #
 # pipeline.R --- example Illumina methylation analysis pipeline.
@@ -170,7 +170,7 @@ arrayFamily <- if (grepl("EPICv2", annotationPackage)) {
 # EPIC, so an EPIC v2 cohort cannot run the cell-composition step in this
 # pipeline; say so up front instead of failing inside estimateCellCounts.gds.
 if (arrayFamily == "EPICv2") {
-    stop("annotationPackage is an EPIC v2 annotation, but the analysis phase (bigmelon::estimateCellCounts.gds) supports only \"450k\" and \"EPIC\" reference data.\n  Run runPreprocess() directly for EPIC v2 and supply your own cell-composition step.",
+    stop("annotationPackage is an EPIC v2 annotation, but the analysis phase (bigmelon::estimateCellCounts.gds) supports only \"450k\" and \"EPIC\" reference data.\n  Use analyze(..., FUN = NULL) to just build the EPIC v2 GDS, then supply your own cell-composition step.",
         call. = FALSE)
 }
 if (gdsPlatform != arrayFamily) {
@@ -211,11 +211,12 @@ if (!dir.exists(outputDir)) {
 outPath <- function(name) file.path(outputDir, name)
 
 # Phases 1 + 2 in a single analyze() call. analyze() runs the validated
-# pre-processing (runPreprocess: config in, QC'd LZ4_RA-compressed GDS out),
-# opens the GDS, and hands the open handle to FUN below for the analysis --
-# guaranteeing the GDS is closed afterwards, on normal return AND on error, via
-# on.exit(). A failed run therefore never leaves the file locked open.
-# normalize = FALSE: the analysis runs its own cache-aware, atomic dasen.
+# pre-processing (config in, QC'd LZ4_RA-compressed GDS out), opens the GDS, and
+# hands the open handle to FUN below for the analysis -- guaranteeing the GDS is
+# closed afterwards, on normal return AND on error, via on.exit(). A failed run
+# therefore never leaves the file locked open. analyze() does no normalisation
+# of its own: FUN below runs outlier detection on the raw betas first, then its
+# own cache-aware, atomic dasen -- the statistically correct order.
 analyze(
     dataDirectory         = dataDirectory,
     nonSpecificProbesPath = nonSpecificProbesPath,
@@ -226,7 +227,6 @@ analyze(
     probeDetPThreshold    = probeDetPThreshold,
     forceRebuild          = forceRebuild,
     readerWorkers         = readerWorkers,
-    normalize             = FALSE,
     FUN = function(gds, res) {
 
         # Outlier detection on the RAW betas, before normalisation: detecting

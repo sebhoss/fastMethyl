@@ -1,15 +1,13 @@
-# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-FileCopyrightText: The fastMethyl authors
 # SPDX-License-Identifier: Artistic-2.0
 #
-# Hand-maintained (not roxygen-generated). The exported readMethArray* names
-# deliberately shadow minfi's, so they are NOT imported from minfi.
-
-export(readMethArray)
-export(readMethArrayExp)
-export(readMethArraySheet)
-export(processMethArray)
-export(processMethArrayExp)
-export(runPreprocess)
+# Hand-maintained (not roxygen-generated).
+#
+# analyze() is the sole public entry point: one call runs the full
+# preprocessing + (optional) normalisation + the caller's analysis. The reader
+# and preprocess machinery (readMethArray*, processMethArray*, runPreprocess)
+# stays internal -- analyze() composes it, and analyze(..., FUN = NULL) covers
+# the "just build the QC'd GDS" case.
 export(analyze)
 
 importFrom(minfi,

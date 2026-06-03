@@ -1,6 +1,7 @@
 # End-to-end analyze() on minfiData via its production defaults
-# (runPreprocess + openfn.gds + dasen + closefn.gds), which the pure tests
-# stub out. Also asserts the GDS is genuinely closed when analyze returns.
+# (runPreprocess + openfn.gds + closefn.gds), which the pure tests stub out.
+# Normalisation runs inside FUN (dasen), and the test asserts the GDS is
+# genuinely closed when analyze returns.
 
 test_that("analyze runs end-to-end with real defaults and closes the GDS", {
     skip_if_slow()
@@ -42,12 +43,13 @@ test_that("analyze runs end-to-end with real defaults and closes the GDS", {
         annotationPackage     = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
         verbose               = 0L,
         FUN = function(gds, res) {
+            dasen(gds, node = "normbetas")   # normalisation lives in FUN now
             list(nodes = ls.gdsn(gds),
                  nsamp = objdesp.gdsn(index.gdsn(gds, "betas"))$dim[[2]],
                  targets = res$targets)
         })
 
-    expect_true("normbetas" %in% out$nodes)        # normalize = TRUE ran dasen
+    expect_true("normbetas" %in% out$nodes)        # FUN's dasen created it
     expect_equal(out$nsamp, length(bns))
     expect_equal(nrow(out$targets), length(bns))
 

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 The fastMethyl authors
+# SPDX-FileCopyrightText: The fastMethyl authors
 # SPDX-License-Identifier: Artistic-2.0
 #
 # Licensing for files that do not carry an inline SPDX header (DCF/config files
@@ -10,11 +10,11 @@ version = 1
 [[annotations]]
 path = ["DESCRIPTION", ".Rbuildignore", ".gitignore", ".ilo.rc"]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "2026 The fastMethyl authors"
+SPDX-FileCopyrightText = "The fastMethyl authors"
 SPDX-License-Identifier = "Artistic-2.0"
 
 [[annotations]]
 path = ["tests/testthat/**", "man/**"]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "2026 The fastMethyl authors"
+SPDX-FileCopyrightText = "The fastMethyl authors"
 SPDX-License-Identifier = "Artistic-2.0"
