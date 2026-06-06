@@ -94,7 +94,7 @@ speed, distinguished by filename:
 | Bucket | Pattern | Loads minfi? | Covers |
 |---|---|---|---|
 | **Pure** | `test-pure-*.R` | no | base-R helpers: verbose normalisation, array-type guessing, probe-address alignment, QC mask logic, arg validation, build-key inspection, `analyze()` control flow, memory/size helpers |
-| **Unit** | `test-unit-*.R` | yes | mocked mixed-cohort dispatch (needs real minfi classes) |
+| **Unit** | `test-unit-*.R` | yes | mocked mixed-cohort dispatch (needs real minfi classes); the install contract (`test-unit-install.R`: the resolved minfi exports every symbol/class fastMethyl imports, every NAMESPACE-imported package is in DESCRIPTION, `analyze()`'s signature) |
 | **Integration** | `test-integration-*.R` | yes | real minfiData / minfiDataEPIC IDAT reads, GDS writes, byte-identity equivalence, QC + compaction, `analyze()` end-to-end. Gated by `FASTMETHYL_RUN_INTEGRATION=1`. |
 
 Integration tests `skip_if_slow()` (which skips unless
@@ -145,6 +145,10 @@ paren-aligned hanging indent; the linter is picky about the exact column.
 - **lint** — `lintr::lint_dir("R")`, fails on any lint.
 - **R CMD check** — runs `tests/testthat.R` (`test_check`); the integration tier
   self-skips because `FASTMETHYL_RUN_INTEGRATION` is unset there.
+- **install** — `dev/install_test.sh`: builds the tarball, installs fastMethyl
+  alone into a fresh empty library, and loads it in a clean process (the closest
+  reproduction of `BiocManager::install("sebhoss/fastMethyl")`). Run it locally
+  with `ilo bash dev/install_test.sh`.
 - **test-integration** — `R CMD INSTALL .` then
   `testthat::test_dir("tests/testthat", filter = "integration")` with
   `FASTMETHYL_RUN_INTEGRATION=1`; runs only after the fast checks pass.
@@ -217,8 +221,9 @@ paren-aligned hanging indent; the linter is picky about the exact column.
 
 ## Container details
 
-`dev/Containerfile` is based on `bioconductor/bioconductor_docker:devel` and
-pre-installs every Bioc dependency the tests need (minfi, minfiData,
+`dev/Containerfile` is based on `bioconductor/bioconductor_docker:latest` (the
+current Bioconductor **release**, matching the environment users install into)
+and pre-installs every Bioc dependency the tests need (minfi, minfiData,
 minfiDataEPIC, bigmelon, wateRmelon, illuminaio, BiocParallel, the 450k/EPIC
 manifest + annotation packages, FlowSorted.Blood.450k, covr, lintr, ...). The
 cold build takes ~30 min; afterwards `ilo` reuses the cached image.

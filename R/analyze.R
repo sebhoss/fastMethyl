@@ -21,10 +21,13 @@
 # production defaults, so the control flow can be unit-tested without IDATs,
 # minfi, gdsfmt, or bigmelon.
 #
-# At verbose = 2 (read from ..., the same level passed to preprocessing) each
-# external-data touch -- preprocessing, opening the GDS, the analysis function
-# -- is logged with the file's on-disk size and a memory snapshot, so a slow or
-# stalling step is visible while it happens instead of being a silent hang.
+# `verbose` defaults to 0 (quiet) and analyze is its single authority: the
+# resolved level is forwarded explicitly to preprocessing, so an unspecified
+# verbose is silent everywhere rather than inheriting whatever standalone
+# default .preprocess carries. At verbose = 2 each external-data touch --
+# preprocessing, opening the GDS, the analysis function -- is logged with the
+# file's on-disk size and a memory snapshot, so a slow or stalling step is
+# visible while it happens instead of being a silent hang.
 
 # Open `path`, run `fun(gds)` with the GDS guaranteed closed afterwards (even
 # if `fun` errors), and return `fun`'s value. This is the reusable
@@ -51,16 +54,22 @@ analyze <- function(..., FUN = NULL,
          call. = FALSE)
   }
 
-  # `verbose` is read out of ... (not a formal) so it still flows through to
-  # .preprocess unchanged; here it only gates analyze's own diagnostics.
+  # Resolve `verbose` once and forward the normalised value explicitly to
+  # .preprocess, so analyze is the single authority on verbosity: an unspecified
+  # verbose is quiet everywhere (0L) rather than picking up .preprocess's own
+  # standalone default, and a legacy logical / out-of-range level is normalised
+  # identically for the preprocessing pass and analyze's own diagnostics below.
+  # Writing the normalised value back into `dots` (rather than leaving the raw
+  # one) keeps it from reaching .preprocess twice.
   dots <- list(...)
   verbose <- .normalize_verbose(if (is.null(dots$verbose)) 0L else dots$verbose)
+  dots$verbose <- verbose
   vlog <- function(fmt, ...) {
     if (verbose >= 2L) message(sprintf(paste0("[analyze] ", fmt), ...))
   }
 
   vlog("starting; %s", .mem_report())
-  res <- .preprocess(...)
+  res <- do.call(.preprocess, dots)
   vlog("preprocessing complete: GDS %s (%s); %s",
        res$gds_path, .path_size(res$gds_path), .mem_report())
 

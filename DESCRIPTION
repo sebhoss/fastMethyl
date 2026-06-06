@@ -1,8 +1,8 @@
 Package: fastMethyl
 Title: Fast, Parallel Preprocessing of Illumina Methylation Arrays
-Version: 0.99.0
+Version: 2026.0.6052239
 Authors@R:
-    person("Sebastian", "Hoss", email = "sebhoss@gmail.com",
+    person("Sebastian", "Hoß", email = "seb@xn--ho-hia.de",
            role = c("aut", "cre"))
 Description: A performance layer over minfi and bigmelon for large Illumina
     methylation cohorts. Provides parallel IDAT reading with an integer-indexed

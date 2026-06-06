@@ -41,27 +41,104 @@ then normalise**. Omit the function to just get the QC'd GDS.
 ## Benchmark
 
 The streaming preprocessing inside `analyze()` is where the speed comes from.
-All timings on a 16-core Linux box with `MulticoreParam(workers = 4)`.
-*Upstream* is the released Bioconductor minfi pipeline; *fastMethyl* is the same
-work done in `analyze()`'s fused, column-streaming pass. Outputs are
-equivalence-verified (the GDS is value-identical) before timings are reported.
+The benchmark compares the IDAT → fully-QC'd-data step both ecosystems perform:
 
-Full IDAT → fully-QC'd GDS: `read.metharray()` + `detectionP()` +
-`preprocessRaw()` + sample/probe QC + `bigmelon::es2gds()` (upstream) vs the
-single streaming pass (fastMethyl).
+- **Upstream** — `read.metharray.exp()` + `detectionP()` + `preprocessRaw()` +
+  sample / probe / sex-chromosome / cross-reactive QC + writing the QC'd matrices
+  to an LZ4_RA-compressed GDS.
+- **fastMethyl** — the same end result in `analyze()`'s single fused,
+  column-streaming pass.
 
-| Sample count | Upstream pipeline | fastMethyl | Speedup   |
-|--------------|-------------------|------------|-----------|
-| 30           | 87.9 s            | 15.1 s     | **5.8×**  |
-| 100          | 267.5 s           | 24.8 s     | **10.8×** |
-| 200          | 537.3 s           | 42.1 s     | **12.8×** |
+Both pipelines produce the *same* artifact — a QC'd, LZ4_RA-compressed,
+bigmelon-compatible GDS — and both pay the *same* compression cost. (bigmelon's
+`es2gds` convenience writer is deliberately not used on the upstream side: it
+stores the matrices **uncompressed**, which would let it skip the compression
+work fastMethyl performs; the upstream column instead writes the same four nodes
+with the same `LZ4_RA` codec.) What *is* excluded from both columns is the
+downstream bigmelon **analysis** — `dasen`, `outlyx`, `prcomp`,
+`estimateCellCounts.gds` — which is the same code regardless of which reader
+produced the GDS. Outputs are equivalence-verified (the QC'd betas are
+value-identical) before timings are reported.
 
-The speedup *grows* with cohort size because the upstream pipeline's dominant
-phase (`detectionP()`) scales linearly in the master process while fastMethyl
-keeps it inside the parallel per-sample loop. Extrapolated to 1000 samples:
-~45 min upstream → ~4 min with fastMethyl — and, unlike the upstream pipeline,
-peak memory stays bounded regardless of cohort size (a real 582-sample EPIC
-cohort ran the full pipeline in ~14.6 GB; see the Notice above).
+**Data.** The benchmark runs on *real* Illumina 450k IDAT files — the six-sample
+dataset shipped in the Bioconductor [`minfiData`](https://bioconductor.org/packages/minfiData)
+package — not synthetic intensities. To reach a target cohort size *N*, those six
+real Grn/Red IDAT pairs are symlinked in a cycle into an *N*-sample directory
+with a matching samplesheet, so both pipelines do genuine on-disk IDAT reads and
+the full read → detection-p → preprocess → QC → compressed-GDS-write path runs on
+real array data at the chosen scale. (Repeating the six samples exercises the
+per-sample compute and I/O faithfully; it does not bias the comparison, which is
+about pipeline *structure* — fused streaming vs. read-everything-then-write — not
+biological variety.)
+
+**How the benchmark is executed.** To make the timings reproducible and to
+protect the host, the whole run is launched inside a `systemd-run --user`
+cgroup v2 scope with a **single fixed resource envelope used for every sample
+size**: CPU via `CPUQuota` (**4 cores**), memory via `MemoryHigh` + `MemoryMax`
+(sized once from a 200-sample reference, ~14 GiB / 17 GiB, so it never OOMs at
+the largest cohort), and disk-write bandwidth via `IOWriteBandwidthMax`. The
+memory/IO envelope is deliberately *not* re-sized per cohort — every run uses the
+identical ~14 GiB / 17 GiB cap — so the across-size *and* across-core comparisons
+reflect the workload, not changing limits (the core-scaling section below varies
+only the CPU quota). Every process the benchmark spawns — the R
+master *and* its forked reader workers — nests under that scope, so the caps
+apply to the whole tree rather than to one process. fastMethyl's reader is
+pinned to a fixed worker count (`MulticoreParam(workers = 4)`, matching the CPU
+quota) rather than auto-detected, because under a quota the host's core count is
+not the budget; upstream minfi reads serially, as it has no parallel read path.
+Peak RAM is the **absolute peak of each pipeline run in a fresh process**,
+measured from the cgroup so it spans the whole process tree (master + workers).
+Running each pipeline fresh — rather than measuring fastMethyl's increment over a
+still-warm minfi heap — is what makes the two columns honest and comparable:
+each number is what that pipeline would peak at if you ran it on its own.
+
+| Samples | Upstream time | fastMethyl time | Speedup  | Upstream peak RAM | fastMethyl peak RAM | Reduction |
+|--------:|--------------:|----------------:|:--------:|------------------:|--------------------:|:---------:|
+|      50 |     156.1 s   |        56.0 s   | **2.8×** | 4.4 GiB           | 4.0 GiB             | **8%**    |
+|     100 |     282.8 s   |        99.3 s   | **2.8×** | 6.7 GiB           | 4.1 GiB             | **40%**   |
+|     200 |     657.2 s   |       187.0 s   | **3.5×** | 12.7 GiB          | 4.2 GiB             | **67%**   |
+
+**Time** is a clean, growing win — **2.8× → 3.5×** — because upstream's dominant
+phases (`detectionP`, `preprocessRaw`) run serially in the master while
+fastMethyl keeps them in the parallel per-sample loop, so the lead widens with
+the cohort.
+
+**Memory** is where the streaming design shows. Upstream holds the full
+Red/Green, methylated/unmethylated and detection-p matrices in RAM at once, so its
+peak grows roughly linearly (**4.4 → 12.7 GiB**). fastMethyl never assembles a
+cohort-sized matrix, so its peak stays **essentially flat (~4 GiB)** — at these
+sizes it is dominated by the one-off 450k annotation frame, not the cohort. The
+consequence is honest about where the win is: at small N both pipelines are
+annotation-bound and roughly even (8% less), but the gap opens to **67% less at
+N=200** and keeps widening — exactly the property that keeps large EPIC cohorts
+bounded where upstream OOMs (a real 582-sample EPIC cohort ran in ~14.6 GB; see
+the Notice above).
+
+### Scaling the reader across cores
+
+fastMethyl's reader is parallel; upstream minfi reads serially and is therefore
+**core-independent** (its column is unchanged below). Re-running only fastMethyl
+at 8 and 12 worker cores against the same minfi baseline:
+
+| Cores | N=50 time / peak | N=100 time / peak | N=200 time / peak |
+|------:|------------------|-------------------|-------------------|
+|   **4** | 56.0 s / 4.0 GiB | 99.3 s / 4.1 GiB | 187.0 s / 4.2 GiB |
+|   **8** | 51.3 s / 6.1 GiB | 93.4 s / 6.1 GiB | 176.7 s / 4.9 GiB |
+|  **12** | 56.8 s / 7.2 GiB | 94.4 s / 7.5 GiB | 177.7 s / 6.0 GiB |
+
+The takeaway: **more cores buy almost no speed but cost real memory.** The host
+has 8 physical cores, so wall-clock barely moves from 4 → 8 → 12 workers (at these
+cohort sizes fastMethyl is not read-bound — the annotation load and GDS write
+dominate), while peak RAM climbs steadily with the worker count. That climb is
+**copy-on-write inflation**: each forked `MulticoreParam` worker's garbage
+collector touches, and so privately copies, the shared master heap, so peak grows
+roughly as *master-heap × workers*. (Its exact size is GC-timing dependent, so
+the per-cohort peaks above are noisy to ±~1 GiB and not strictly monotonic in N;
+the robust signal is that peak rises with worker count.) At 8–12 workers this can
+even push fastMethyl's small-cohort peak above upstream's, though fastMethyl still
+wins decisively at N=200 where upstream's matrices dominate. **Recommendation:
+size workers to roughly the physical-core count (≈4–8 here); beyond that you pay
+memory for no speed.**
 
 ## Installation
 
@@ -82,9 +159,15 @@ Paste the whole block into the R console:
 if (!requireNamespace("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
 
-BiocManager::install("sebhoss/fastMethyl")
+BiocManager::install("sebhoss/fastMethyl", update = FALSE)
 BiocManager::install("bigmelon")
 ```
+
+`update = FALSE` is important: it tells the installer to leave your existing
+dependencies in place and only install fastMethyl. Without it the installer may
+try to re-install `minfi` (a dependency); if your `minfi` lives in a system
+library you cannot write to, or is loaded in another R session, that re-install
+fails with a permission error (see Troubleshooting below).
 
 The first install takes **5–20 minutes** because of the Bioconductor
 dependencies. R may interrupt with two questions; the answer to both is `n`:
@@ -108,6 +191,36 @@ If something fails to compile on Windows/macOS, install
 [Rtools](https://cran.r-project.org/bin/windows/Rtools/) (Windows) or the Xcode
 command-line tools (`xcode-select --install`, macOS) and re-run; for anything
 else, open an issue at <https://github.com/sebhoss/fastMethyl/issues>.
+
+### Troubleshooting: a permission error mentioning `minfi`
+
+```
+Warning: cannot remove prior installation of package 'minfi'
+Error: ... Permission denied
+```
+
+This means the installer tried to re-install `minfi` and could not overwrite the
+copy you already have. fastMethyl depends only on `minfi`'s public API and does
+**not** need a special build of it, so the re-install is unnecessary — stop it
+from happening:
+
+1. **Always pass `update = FALSE`** (as in the install command above). That alone
+   prevents the installer from touching your existing `minfi`.
+2. **Install from a fresh R session** (no `library(minfi)` loaded), so the
+   package files are not locked.
+
+If you previously installed the **`sebhoss/minfi` development fork** (it reports a
+version like `1.59.0.9000`, higher than the Bioconductor release), the installer
+sees a `minfi` "newer than Bioconductor" and is especially prone to trying to
+replace it — which is what triggers the error when that copy is read-only or
+loaded. fastMethyl works with both the fork and the stock release, so the
+simplest fix is to return to the official `minfi` once:
+
+```r
+remove.packages("minfi")
+BiocManager::install("minfi")        # the official Bioconductor build
+BiocManager::install("sebhoss/fastMethyl", update = FALSE)
+```
 
 ## Usage
 

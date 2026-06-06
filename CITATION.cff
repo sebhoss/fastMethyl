@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: The fastMethyl authors
+# SPDX-License-Identifier: Artistic-2.0
+cff-version: 1.2.0
+message: "If you use fastMethyl in your research, please cite it as below."
+title: "fastMethyl: Fast, Parallel Preprocessing of Illumina Methylation Arrays"
+abstract: >-
+  A performance layer over minfi and bigmelon for large Illumina methylation
+  cohorts. Provides parallel IDAT reading with an integer-indexed worker
+  assembly hot path, and a fused per-sample streaming pipeline that runs read +
+  detection p-value + raw preprocessing + sample/probe quality control in a
+  single pass, writing an LZ4_RA-compressed, bigmelon-compatible GDS file
+  without ever assembling a full cohort-sized matrix in RAM.
+type: software
+authors:
+  - given-names: Sebastian
+    family-names: Hoß
+    email: seb@xn--ho-hia.de
+version: 2026.0.6052239
+date-released: "2026-06-05"
+license: Artistic-2.0
+url: "https://github.com/sebhoss/fastMethyl"
+repository-code: "https://github.com/sebhoss/fastMethyl"
+keywords:
+  - DNA-methylation
+  - Illumina
+  - IDAT
+  - preprocessing
+  - bioconductor
+  - minfi
+  - bigmelon
+  - epigenetics

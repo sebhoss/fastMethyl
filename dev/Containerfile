@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Artistic-2.0
 #
 # Bioconductor base image already ships R + many BioC packages.
-FROM docker.io/bioconductor/bioconductor_docker:devel
+# Track the current Bioconductor release (not devel): it is the environment
+# users install into, and BiocCheck's even-minor version convention matches it.
+FROM docker.io/bioconductor/bioconductor_docker:latest
 
 ENV R_LIBS_USER=/usr/local/lib/R/site-library
 

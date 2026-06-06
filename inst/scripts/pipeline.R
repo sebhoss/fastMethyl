@@ -73,9 +73,48 @@ probeDetPThreshold    <- 0.01
 # TRUE to force a rebuild (e.g. after changing IDAT sources / QC).
 forceRebuild          <- FALSE
 
-# IDAT-reader worker count. detectCores(logical = FALSE) returns
-# physical cores; leave one free for the OS and other interactive work.
-readerWorkers         <- max(1L, parallel::detectCores(logical = FALSE) - 1L)
+# IDAT-reader worker count = the full available CPU budget. When a cgroup CPU
+# quota is in force (an HPC scheduler, a container, or a systemd CPUQuota=),
+# parallel::detectCores() over-subscribes because it reports the host's physical
+# cores and ignores the quota, oversizing the parallel fan-out and the streaming
+# write bursts. .cgroupCpuBudget() reads the effective core budget from cgroup v2
+# (cpu.max: "quota period") or v1 (cpu.cfs_quota_us / cpu.cfs_period_us) and caps
+# detectCores() to it; where no quota is set it returns the physical-core count
+# unchanged. No core is held back -- when a quota applies the cgroup already
+# reserves the rest of the machine for everything else.
+.cgroupCpuBudget <- function() {
+    physical <- parallel::detectCores(logical = FALSE)
+    if (is.na(physical) || physical < 1L) physical <- 1L
+    quotaCores <- NA_real_
+    v2 <- "/sys/fs/cgroup/cpu.max"
+    if (file.exists(v2)) {
+        f <- strsplit(readLines(v2, n = 1L, warn = FALSE), "\\s+")[[1L]]
+        if (length(f) == 2L && f[[1L]] != "max") {
+            q <- suppressWarnings(as.numeric(f[[1L]]))
+            p <- suppressWarnings(as.numeric(f[[2L]]))
+            if (isTRUE(is.finite(q)) && isTRUE(is.finite(p)) && p > 0) {
+                quotaCores <- q / p
+            }
+        }
+    } else {
+        qf <- "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
+        pf <- "/sys/fs/cgroup/cpu/cpu.cfs_period_us"
+        if (file.exists(qf) && file.exists(pf)) {
+            q <- suppressWarnings(as.numeric(readLines(qf, n = 1L, warn = FALSE)))
+            p <- suppressWarnings(as.numeric(readLines(pf, n = 1L, warn = FALSE)))
+            if (isTRUE(is.finite(q)) && q > 0 &&
+                  isTRUE(is.finite(p)) && p > 0) {
+                quotaCores <- q / p
+            }
+        }
+    }
+    if (isTRUE(is.finite(quotaCores))) {
+        max(1L, min(physical, as.integer(floor(quotaCores))))
+    } else {
+        physical
+    }
+}
+readerWorkers         <- .cgroupCpuBudget()
 
 # --- Analysis settings (used by the PIPELINE block below) -----------
 # bigmelon::outlyx() percentile for outlier detection.

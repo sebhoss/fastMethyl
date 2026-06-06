@@ -58,12 +58,101 @@ test_that("analyze forwards ... to preprocess, calls FUN(gds, res), returns its 
         dataDirectory = "D", annotationPackage = "A",
         FUN = function(gds, res) list(g = gds, r = res),
         .preprocess = h$pre, .open = h$open, .close = h$clos)
+    # The user's named arguments reach .preprocess unchanged; analyze also
+    # appends the resolved verbose (0L here -- unspecified means quiet).
     expect_identical(h$log$ppargs,
-                     list(dataDirectory = "D", annotationPackage = "A"))
+                     list(dataDirectory = "D", annotationPackage = "A",
+                          verbose = 0L))
     expect_identical(h$log$opened, "/tmp/x.gds")
     expect_identical(out$g, "GDS")
     expect_identical(out$r, h$res)
     expect_identical(h$log$closed, 1L)
+})
+
+# ---- analyze() is the single authority on verbose --------------------
+#
+# The contract: an analyze() call that does not name verbose forwards 0L (quiet)
+# to .preprocess rather than letting .preprocess apply its own standalone
+# default, and a user-supplied level is normalised once (legacy logical ->
+# integer, the same mapping analyze applies to its own diagnostics) so
+# .preprocess sees exactly that normalised value.
+
+test_that("analyze forwards verbose = 0L to preprocess when verbose is unspecified", {
+    h <- .analyze_hooks()
+    analyze(dataDirectory = "D",
+            .preprocess = h$pre, .open = h$open, .close = h$clos)
+    expect_identical(h$log$ppargs$verbose, 0L)
+})
+
+test_that("analyze forwards an explicit integer verbose unchanged to preprocess", {
+    for (lvl in c(0L, 1L, 2L)) {
+        h <- .analyze_hooks()
+        analyze(dataDirectory = "D", verbose = lvl,
+                .preprocess = h$pre, .open = h$open, .close = h$clos)
+        expect_identical(h$log$ppargs$verbose, lvl)
+    }
+})
+
+test_that("analyze normalises a legacy logical verbose before forwarding it", {
+    h <- .analyze_hooks()
+    analyze(dataDirectory = "D", verbose = TRUE,
+            .preprocess = h$pre, .open = h$open, .close = h$clos)
+    expect_identical(h$log$ppargs$verbose, 1L)
+
+    h <- .analyze_hooks()
+    analyze(dataDirectory = "D", verbose = FALSE,
+            .preprocess = h$pre, .open = h$open, .close = h$clos)
+    expect_identical(h$log$ppargs$verbose, 0L)
+})
+
+test_that("analyze forwards the resolved verbose on the no-FUN path too", {
+    h <- .analyze_hooks()
+    analyze(dataDirectory = "D", verbose = 2L,
+            .preprocess = h$pre, .open = h$open, .close = h$clos)
+    expect_identical(h$log$ppargs$verbose, 2L)
+    expect_null(h$log$opened)          # no FUN: the GDS is never opened
+})
+
+test_that("analyze never passes verbose to preprocess twice", {
+    # do.call would error with a duplicated formal if analyze both forwarded the
+    # raw ... verbose and appended a resolved one; a clean run proves it writes
+    # the normalised value back over the raw one instead of adding a second.
+    h <- .analyze_hooks()
+    # verbose = 0L so analyze emits no diagnostics of its own; the duplicate
+    # check in .preprocess is independent of the level.
+    expect_silent(
+        analyze(dataDirectory = "D", verbose = 0L,
+                FUN = function(gds, res) NULL,
+                .preprocess = function(...) {
+                    args <- list(...)
+                    stopifnot(sum(names(args) == "verbose") == 1L)
+                    h$res
+                },
+                .open = h$open, .close = h$clos))
+})
+
+test_that("analyze rejects an out-of-range or malformed verbose before preprocessing", {
+    h <- .analyze_hooks()
+    # .normalize_verbose runs in analyze, so a bad level fails fast and
+    # .preprocess is never reached (no recorded args).
+    expect_error(
+        analyze(dataDirectory = "D", verbose = 3L,
+                .preprocess = h$pre, .open = h$open, .close = h$clos),
+        regexp = "verbose")
+    expect_null(h$log$ppargs)
+
+    expect_error(
+        analyze(dataDirectory = "D", verbose = NA,
+                .preprocess = h$pre, .open = h$open, .close = h$clos),
+        regexp = "verbose")
+    expect_error(
+        analyze(dataDirectory = "D", verbose = c(1L, 2L),
+                .preprocess = h$pre, .open = h$open, .close = h$clos),
+        regexp = "verbose")
+    expect_error(
+        analyze(dataDirectory = "D", verbose = "loud",
+                .preprocess = h$pre, .open = h$open, .close = h$clos),
+        regexp = "verbose")
 })
 
 test_that("analyze closes the GDS even when FUN errors", {

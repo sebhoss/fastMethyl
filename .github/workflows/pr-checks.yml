@@ -4,11 +4,12 @@
 # CI for fastMethyl. Five jobs:
 #   lint              - lintr over R/ (config in repo-root .lintr)
 #   R-CMD-check       - rcmdcheck; runs the test suite (integration auto-skips)
+#   install           - clean-room build + install into an empty library + load
 #   bioc-check        - BiocCheck (Bioconductor-specific, advisory)
 #   test-integration  - the real-IDAT tier (FASTMETHYL_RUN_INTEGRATION=1)
 #   coverage          - covr + Codecov upload
 #
-# The Bioc jobs run in the Bioconductor devel image; r-lib/actions installs and
+# The Bioc jobs run in the Bioconductor release image; r-lib/actions installs and
 # caches the declared dependencies (minfi, bigmelon, the data packages, ...).
 
 name: PR checks
@@ -55,7 +56,7 @@ jobs:
   R-CMD-check:
     name: R CMD check
     runs-on: ubuntu-latest
-    container: bioconductor/bioconductor_docker:devel
+    container: bioconductor/bioconductor_docker:latest
     steps:
       - uses: actions/checkout@v4
 
@@ -89,10 +90,32 @@ jobs:
           path: check
           retention-days: 7
 
+  install:
+    name: clean-room install
+    runs-on: ubuntu-latest
+    container: bioconductor/bioconductor_docker:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"hard"'
+
+      # Builds the tarball, installs fastMethyl alone into a fresh empty
+      # library, and loads it in a clean process -- the closest reproduction of
+      # `BiocManager::install("sebhoss/fastMethyl")`. Catches a NAMESPACE import
+      # the resolved minfi does not export, a dependency missing from
+      # DESCRIPTION, or a file the package needs but .Rbuildignore excludes.
+      - name: End-to-end install test
+        run: bash dev/install_test.sh
+
   bioc-check:
     name: BiocCheck (advisory)
     runs-on: ubuntu-latest
-    container: bioconductor/bioconductor_docker:devel
+    container: bioconductor/bioconductor_docker:latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -111,7 +134,7 @@ jobs:
   test-integration:
     name: tests (integration)
     runs-on: ubuntu-latest
-    container: bioconductor/bioconductor_docker:devel
+    container: bioconductor/bioconductor_docker:latest
     # Gate the slow, data-package-heavy integration tier behind R CMD check
     # (which has already run the pure + unit tests).
     needs: R-CMD-check
@@ -145,7 +168,7 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
-    container: bioconductor/bioconductor_docker:devel
+    container: bioconductor/bioconductor_docker:latest
     steps:
       - uses: actions/checkout@v4
 
