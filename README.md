@@ -64,7 +64,7 @@ the package recommends for a working GDS, and it isolates the *structural* win.
 GDS compression is a cost both sides pay almost equally — it is the same four
 matrices either way — so turning it on mostly adds the same seconds to both
 columns and **shrinks** the ratio rather than changing who wins. (With `LZ4_RA`
-on both, the speed-up narrows from ~9× to ~4–5× while fastMethyl still leads at
+on both, the speed-up narrows from ≈9× to ≈4–5× while fastMethyl still leads at
 every size; that compressed comparison lives in
 [Speed vs. disk size](#speed-vs-disk-size-the-compress-knob) below.) bigmelon's
 `es2gds` writer is not used on the upstream side — it would impose its own node
@@ -90,10 +90,10 @@ biological variety.)
 protect the host, the whole run is launched inside a `systemd-run --user`
 cgroup v2 scope with a **single fixed resource envelope used for every sample
 size**: CPU via `CPUQuota` (**4 cores**), memory via `MemoryHigh` + `MemoryMax`
-(sized once from a 200-sample reference, ~14 GiB / 17 GiB, so it never OOMs at
+(sized once from a 200-sample reference, ≈14 GiB / 17 GiB, so it never OOMs at
 the largest cohort), and disk-write bandwidth via `IOWriteBandwidthMax`. The
 memory/IO envelope is deliberately *not* re-sized per cohort — every run uses the
-identical ~14 GiB / 17 GiB cap — so the across-size *and* across-core comparisons
+identical ≈14 GiB / 17 GiB cap — so the across-size *and* across-core comparisons
 reflect the workload, not changing limits (the core-scaling section below varies
 only the CPU quota). Every process the benchmark spawns — the R
 master *and* its forked reader workers — nests under that scope, so the caps
@@ -128,7 +128,7 @@ the four node buffers concurrently. The consequence is honest about where the wi
 is: at small N both pipelines are annotation-bound and closer (13% less), but the
 gap opens to **45% less at N=200** and keeps widening — exactly the property that
 keeps large EPIC cohorts bounded where upstream OOMs (a real 582-sample EPIC
-cohort ran in ~14.6 GB; see the Notice above).
+cohort ran in ≈14.6 GB; see the Notice above).
 
 ### Scaling the reader across cores
 
@@ -145,13 +145,13 @@ at 8 and 12 worker cores against the same minfi baseline:
 The takeaway: **with compression off, more cores genuinely speed up large
 cohorts.** At N=200 the reads are the bottleneck again — once the serial
 master-side compression is gone — so wall-clock drops with worker count (69 → 65
-→ **50 s**, ~27% from 4 → 12). At small N the per-worker overhead dominates
+→ **50 s**, ≈27% from 4 → 12). At small N the per-worker overhead dominates
 instead, so extra cores do nothing or slightly *regress* (12 workers is the
 slowest at N=50). Peak RAM, meanwhile, always climbs with the worker count: that
 is **copy-on-write inflation** — each forked `MulticoreParam` worker's garbage
 collector touches, and so privately copies, the shared master heap, so peak grows
 roughly as *master-heap × workers*. (Its exact size is GC-timing dependent, so
-the per-cohort peaks above are noisy to ±~1 GiB; the robust signal is that peak
+the per-cohort peaks above are noisy to ±1 GiB; the robust signal is that peak
 rises with worker count.) **Recommendation: scale workers toward the core count
 for large cohorts where the read parallelises, but expect diminishing returns and
 rising memory; for small cohorts a handful of workers is plenty.** (Under the
@@ -164,7 +164,7 @@ cores buy almost nothing — see [Speed vs. disk size](#speed-vs-disk-size-the-c
 
 - **R 4.4 or later** (<https://cran.r-project.org/>).
 - **An internet connection** during install — R downloads the package and its
-  ~30 Bioconductor dependencies.
+  ≈30 Bioconductor dependencies.
 - **`bigmelon`** for the GDS output and the downstream analysis (`dasen`,
   `outlyx`, `prcomp`, `estimateCellCounts.gds`). The install command below
   installs it for you.
@@ -353,7 +353,7 @@ file.copy(system.file("scripts", "pipeline.R", package = "fastMethyl"), "pipelin
 > **GDS compression is the single biggest cost in `analyze()`, so it is off by
 > default.** `analyze()` writes the matrices **uncompressed** (`compress = ""`),
 > the fastest option. Passing **`compress = "LZ4_RA"`** shrinks the GDS but is
-> **~2× slower**, because the compression CPU dominates both the streaming write
+> **≈2× slower**, because the compression CPU dominates both the streaming write
 > *and* the probe-QC compaction. Turn it on only when you want a smaller file:
 
 ```r
@@ -362,7 +362,7 @@ analyze(..., compress = "LZ4_RA") # ~2x slower; smaller GDS (~1.3x) for archivin
 ```
 
 The trade is asymmetric: compression roughly **doubles the runtime** but shrinks
-the file by only about a quarter (uncompressed is ~1.3× larger), because
+the file by only about a quarter (uncompressed is ≈1.3× larger), because
 methylation intensity/beta matrices do not compress dramatically. Same 450k
 cohorts, 4 cores, identical envelope:
 
@@ -381,7 +381,7 @@ the build-key cache. Recommendations:
 |---|---|---|
 | **You re-run often** (development, threshold tuning) | `compress = ""` *(default)* | the time saved each run dwarfs the disk cost; the file is transient |
 | **Large cohort + ample/fast disk** | `compress = ""` *(default)* | the absolute time saving grows with cohort size (minutes on 1000-sample EPIC) |
-| **Archiving, sharing, or disk-constrained** | `"LZ4_RA"` | a 1000-sample EPIC GDS can be tens of GB; ~26% off is real |
+| **Archiving, sharing, or disk-constrained** | `"LZ4_RA"` | a 1000-sample EPIC GDS can be tens of GB; ≈26% off is real |
 | **One-off run you keep long-term** | `"LZ4_RA"` | you pay the compression once, save disk forever |
 | **Small cohort** (≤ a few hundred) | either | the time difference is seconds; pick by whether you keep the file |
 
