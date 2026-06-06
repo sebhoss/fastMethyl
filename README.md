@@ -46,35 +46,6 @@ adds a single, fast, memory-bounded entry point: **`analyze()`**.
 control their order — the statistically correct one being **outliers first,
 then normalise**. Omit the function to just get the QC'd GDS.
 
-## Speed vs. disk size: the `compress` knob
-
-> **GDS compression is the single biggest cost in `analyze()` — and it's
-> optional.** Writing the matrices with `LZ4_RA` (the default) keeps the GDS
-> small but is **~2–3× slower** than writing them uncompressed, because the
-> compression CPU dominates both the streaming write *and* the probe-QC
-> compaction. Pass **`compress = ""`** to skip it:
-
-```r
-analyze(..., compress = "")     # ~2-3x faster; larger GDS (~1.5-2x)
-analyze(...)                    # default compress = "LZ4_RA": small GDS, slower
-```
-
-It changes only *how the data is stored*, never the values — the GDS is
-**bigmelon-compatible either way** (uncompressed nodes read back identically and
-still support the row-subset reads `dasen`/`outlyx` need), and it is not part of
-the build-key cache. Recommendations:
-
-| Situation | Use | Why |
-|---|---|---|
-| **You re-run often** (development, threshold tuning) | `compress = ""` | the time saved each run dwarfs the disk cost; the file is transient |
-| **Large cohort + ample/fast disk** | `compress = ""` | the absolute time saving grows with cohort size (minutes on 1000-sample EPIC) |
-| **Archiving, sharing, or disk-constrained** | `"LZ4_RA"` (default) | an uncompressed 1000-sample EPIC GDS can be tens of GB |
-| **One-off run you keep long-term** | `"LZ4_RA"` (default) | you pay the compression once, save disk forever |
-| **Small cohort** (≤ a few hundred) | either | the time difference is seconds; pick by whether you keep the file |
-
-In short: **optimise for runtime with `compress = ""` when the GDS is a
-throwaway intermediate; keep the default when the GDS is an artifact you store.**
-
 ## Benchmark
 
 The streaming preprocessing inside `analyze()` is where the speed comes from.
@@ -131,11 +102,11 @@ each number is what that pipeline would peak at if you ran it on its own.
 
 | Samples | Upstream time | fastMethyl time | Speedup  | Upstream peak RAM | fastMethyl peak RAM | Reduction |
 |--------:|--------------:|----------------:|:--------:|------------------:|--------------------:|:---------:|
-|      50 |     156.1 s   |        56.0 s   | **2.8×** | 4.4 GiB           | 4.0 GiB             | **8%**    |
-|     100 |     282.8 s   |        99.3 s   | **2.8×** | 6.7 GiB           | 4.1 GiB             | **40%**   |
-|     200 |     657.2 s   |       187.0 s   | **3.5×** | 12.7 GiB          | 4.2 GiB             | **67%**   |
+|      50 |     156.1 s   |        44.7 s   | **3.5×** | 4.4 GiB           | 4.0 GiB             | **7%**    |
+|     100 |     282.8 s   |        76.4 s   | **3.7×** | 6.7 GiB           | 4.1 GiB             | **39%**   |
+|     200 |     657.2 s   |       144.3 s   | **4.6×** | 12.7 GiB          | 5.3 GiB             | **58%**   |
 
-**Time** is a clean, growing win — **2.8× → 3.5×** — because upstream's dominant
+**Time** is a clean, growing win — **3.5× → 4.6×** — because upstream's dominant
 phases (`detectionP`, `preprocessRaw`) run serially in the master while
 fastMethyl keeps them in the parallel per-sample loop, so the lead widens with
 the cohort.
@@ -143,13 +114,14 @@ the cohort.
 **Memory** is where the streaming design shows. Upstream holds the full
 Red/Green, methylated/unmethylated and detection-p matrices in RAM at once, so its
 peak grows roughly linearly (**4.4 → 12.7 GiB**). fastMethyl never assembles a
-cohort-sized matrix, so its peak stays **essentially flat (~4 GiB)** — at these
-sizes it is dominated by the one-off 450k annotation frame, not the cohort. The
-consequence is honest about where the win is: at small N both pipelines are
-annotation-bound and roughly even (8% less), but the gap opens to **67% less at
-N=200** and keeps widening — exactly the property that keeps large EPIC cohorts
-bounded where upstream OOMs (a real 582-sample EPIC cohort ran in ~14.6 GB; see
-the Notice above).
+cohort-sized matrix, so its peak stays low and grows far slower (**4.0 → 5.3
+GiB**) — at small N it is dominated by the one-off 450k annotation frame, not the
+cohort, and the rise at N=200 is the parallel probe-QC compaction briefly holding
+the four node buffers concurrently. The consequence is honest about where the win
+is: at small N both pipelines are annotation-bound and roughly even (7% less), but
+the gap opens to **58% less at N=200** and keeps widening — exactly the property
+that keeps large EPIC cohorts bounded where upstream OOMs (a real 582-sample EPIC
+cohort ran in ~14.6 GB; see the Notice above).
 
 ### Scaling the reader across cores
 
@@ -159,9 +131,9 @@ at 8 and 12 worker cores against the same minfi baseline:
 
 | Cores | N=50 time / peak | N=100 time / peak | N=200 time / peak |
 |------:|------------------|-------------------|-------------------|
-|   **4** | 56.0 s / 4.0 GiB | 99.3 s / 4.1 GiB | 187.0 s / 4.2 GiB |
-|   **8** | 51.3 s / 6.1 GiB | 93.4 s / 6.1 GiB | 176.7 s / 4.9 GiB |
-|  **12** | 56.8 s / 7.2 GiB | 94.4 s / 7.5 GiB | 177.7 s / 6.0 GiB |
+|   **4** | 44.7 s / 4.0 GiB | 76.4 s / 4.1 GiB | 144.3 s / 5.3 GiB |
+|   **8** | 42.5 s / 6.2 GiB | 73.0 s / 6.0 GiB | 135.1 s / 6.5 GiB |
+|  **12** | 45.9 s / 7.4 GiB | 75.4 s / 6.9 GiB | 135.9 s / 7.5 GiB |
 
 The takeaway: **more cores buy almost no speed but cost real memory.** The host
 has 8 physical cores, so wall-clock barely moves from 4 → 8 → 12 workers (at these
@@ -301,6 +273,9 @@ res <- analyze(
   targetPattern         = "batch1",   # expects samplesheet_batch1.csv in dataDirectory
   datasetClass          = "my_study", # output GDS is my_study.gds
   annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+  compress              = "",         # fastest write (~2x): the GDS is a working
+                                      # intermediate here; see "Speed vs. disk
+                                      # size" below before keeping it long-term
   FUN = function(gds, res) {
     outliers <- outlyx(gds, plot = FALSE)             # 1. detect on RAW betas
     dasen(gds, node = "normbetas")                    # 2. then normalise
@@ -326,7 +301,9 @@ res <- analyze(
   nonSpecificProbesPath = "/path/to/cross-reactive.csv",
   targetPattern         = "batch1",
   datasetClass          = "my_study",
-  annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19")
+  annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+  compress              = "")         # ~2x faster write; drop this arg (default
+                                      # "LZ4_RA") if you archive the GDS
 res$gds_path             # the QC'd GDS; open it with bigmelon/gdsfmt for any analysis
 ```
 
@@ -340,6 +317,45 @@ edit its CONFIG block:
 file.copy(system.file("scripts", "pipeline.R", package = "fastMethyl"), "pipeline.R")
 # edit the CONFIG block, then:  Rscript pipeline.R
 ```
+
+### Speed vs. disk size: the `compress` knob
+
+> **GDS compression is the single biggest cost in `analyze()` — and it's
+> optional.** Writing the matrices with `LZ4_RA` (the default) keeps the GDS
+> small but is **~2× slower** than writing them uncompressed, because the
+> compression CPU dominates both the streaming write *and* the probe-QC
+> compaction. Pass **`compress = ""`** to skip it:
+
+```r
+analyze(..., compress = "")     # ~2x faster; larger GDS (~1.3x)
+analyze(...)                    # default compress = "LZ4_RA": small GDS, slower
+```
+
+The trade is asymmetric: skipping compression roughly **halves the runtime** but
+only grows the file by about a third, because methylation intensity/beta matrices
+do not compress dramatically. Same 450k cohorts, 4 cores, identical envelope:
+
+| Samples | `LZ4_RA` time | `compress = ""` time | Speed-up | `LZ4_RA` size | `compress = ""` size | Size cost |
+|--------:|--------------:|---------------------:|:--------:|--------------:|---------------------:|:---------:|
+|      50 |      44.7 s    |        23.1 s         | **1.9×** |    629 MiB    |       771 MiB         | **+23%**  |
+|     100 |      76.4 s    |        34.3 s         | **2.2×** |    972 MiB    |      1314 MiB         | **+35%**  |
+|     200 |     144.3 s    |        75.4 s         | **1.9×** |   1765 MiB    |      2399 MiB         | **+36%**  |
+
+It changes only *how the data is stored*, never the values — the GDS is
+**bigmelon-compatible either way** (uncompressed nodes read back identically and
+still support the row-subset reads `dasen`/`outlyx` need), and it is not part of
+the build-key cache. Recommendations:
+
+| Situation | Use | Why |
+|---|---|---|
+| **You re-run often** (development, threshold tuning) | `compress = ""` | the time saved each run dwarfs the disk cost; the file is transient |
+| **Large cohort + ample/fast disk** | `compress = ""` | the absolute time saving grows with cohort size (minutes on 1000-sample EPIC) |
+| **Archiving, sharing, or disk-constrained** | `"LZ4_RA"` (default) | an uncompressed 1000-sample EPIC GDS can be tens of GB |
+| **One-off run you keep long-term** | `"LZ4_RA"` (default) | you pay the compression once, save disk forever |
+| **Small cohort** (≤ a few hundred) | either | the time difference is seconds; pick by whether you keep the file |
+
+In short: **optimise for runtime with `compress = ""` when the GDS is a
+throwaway intermediate; keep the default when the GDS is an artifact you store.**
 
 ## Provenance & license
 

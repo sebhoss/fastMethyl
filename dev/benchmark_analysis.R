@@ -81,6 +81,8 @@ sides <- Sys.getenv("BENCH_SIDES", "both")
 # cluster -- independent worker processes, no COW inflation; ships the index
 # tables over a socket instead of inheriting them).
 bpKind <- Sys.getenv("BENCH_BPPARAM", "multicore")
+# GDS codec for the fastMethyl side: "LZ4_RA" (default) or "" (uncompressed).
+bpCompress <- Sys.getenv("BENCH_COMPRESS", "LZ4_RA")
 naMeasure <- list(time = NA_real_, peak = NA_real_, avg = NA_real_, value = NULL)
 dir.create(scratch, showWarnings = FALSE, recursive = TRUE)
 
@@ -116,11 +118,13 @@ measure <- function(fn) {
   # forked workers are reaped on exit, so every cohort measures from the same
   # baseline. The cgroup sampler sees the whole tree (idle parent + child +
   # workers), so the peak still accounts for the workers.
+  out <- NULL
   t <- unname(system.time({
     job <- parallel::mcparallel(fn(), detached = FALSE)
-    parallel::mccollect(job)
+    out <- parallel::mccollect(job)
   })[3])
-  val <- NULL
+  # The forked child's return value (fastMethyl returns its GDS size in bytes).
+  val <- if (length(out)) out[[1L]] else NULL
   peak <- NA_real_
   avg <- NA_real_
   if (hasCg) {
@@ -232,6 +236,7 @@ fmPipeline <- function(coh) {
     sampleDetPThreshold   = sampleThreshold,
     probeDetPThreshold    = probeThreshold,
     forceRebuild          = TRUE,
+    compress              = bpCompress,
     verbose               = 0L,
     FUN                   = NULL)
   if (bpKind == "snow") {
@@ -244,7 +249,10 @@ fmPipeline <- function(coh) {
     args$readerWorkers <- workers
   }
   do.call(analyze, args)
+  gds <- paste0(cls, ".gds")
+  sz <- if (file.exists(gds)) file.size(gds) else NA_real_
   unlink(paste0(cls, c(".gds", ".gds.buildkey.rds")))
+  invisible(sz)   # GDS size in bytes, surfaced through measure()'s `value`
 }
 
 cat(sprintf("probes: 450k   workers (fastMethyl reader): %d   sides: %s   (minfi reads serially)\n",
@@ -275,6 +283,8 @@ for (n in Ns) {
   unlink(coh$dir, recursive = TRUE)
   speedup <- if (is.na(up$time) || is.na(fm$time)) NA_real_ else
     round(up$time / fm$time, 1)
+  fm_gds <- if (is.null(fm$value) || is.na(fm$value)) NA_integer_ else
+    as.integer(round(fm$value / 1048576))
   rows[[length(rows) + 1L]] <- data.frame(
     N = n,
     upstream_s = round(up$time, 1),
@@ -282,6 +292,7 @@ for (n in Ns) {
     speedup = speedup,
     upstream_peak_MiB = mib(up$peak),
     fastMethyl_peak_MiB = mib(fm$peak),
+    fastMethyl_gds_MiB = fm_gds,
     upstream_avg_MiB = mib(up$avg),
     fastMethyl_avg_MiB = mib(fm$avg))
 }

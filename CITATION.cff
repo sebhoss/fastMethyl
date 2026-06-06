@@ -12,9 +12,6 @@ abstract: >-
   without ever assembling a full cohort-sized matrix in RAM.
 type: software
 authors:
-  - given-names: Marisol
-    family-names: Herrera Rivero
-    email: marisol.herrera@uni-muenster.de
   - given-names: Sebastian
     family-names: Hoß
     email: seb@xn--ho-hia.de

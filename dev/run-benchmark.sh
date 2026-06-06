@@ -63,6 +63,9 @@ BENCH_SIDES="${BENCH_SIDES:-both}"             # "both" or "fastmethyl" (minfi i
                                                # need only re-run fastMethyl)
 BENCH_BPPARAM="${BENCH_BPPARAM:-multicore}"    # fastMethyl reader backend:
                                                # "multicore" (fork) or "snow"
+# `-` (not `:-`): an explicitly empty BENCH_COMPRESS means "no compression" and
+# must survive; only a genuinely unset var falls back to the LZ4_RA default.
+BENCH_COMPRESS="${BENCH_COMPRESS-LZ4_RA}"       # GDS codec: "LZ4_RA" or "" (none)
 IO_RATE="${IO_RATE:-120M}"
 scratch="${BENCH_SCRATCH:-$PWD/dev/scratch}"
 
@@ -117,4 +120,4 @@ exec systemd-run --user --scope --unit="fm-bench-$$" -p Delegate=yes \
   -p "MemoryHigh=${mem_high}G" \
   -p "MemoryMax=${mem_max}G" \
   -p "IOWriteBandwidthMax=$iodev $IO_RATE" \
-  ilo bash -c "env BENCH_N='$BENCH_N' BENCH_WORKERS='$BENCH_WORKERS' BENCH_SIDES='$BENCH_SIDES' BENCH_BPPARAM='$BENCH_BPPARAM' R_LIBS=dev/scratch/rlib:/usr/local/lib/R/site-library Rscript dev/benchmark_analysis.R"
+  ilo bash -c "env BENCH_N='$BENCH_N' BENCH_WORKERS='$BENCH_WORKERS' BENCH_SIDES='$BENCH_SIDES' BENCH_BPPARAM='$BENCH_BPPARAM' BENCH_COMPRESS='$BENCH_COMPRESS' R_LIBS=dev/scratch/rlib:/usr/local/lib/R/site-library Rscript dev/benchmark_analysis.R"
