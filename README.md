@@ -130,28 +130,39 @@ gap opens to **45% less at N=200** and keeps widening — exactly the property t
 keeps large EPIC cohorts bounded where upstream OOMs (a real 582-sample EPIC
 cohort ran in ≈14.6 GB; see the Notice above).
 
-### Past where minfi fits: N = 500 and 1000
+### Past where minfi fits: N = 500 to 2000
 
 The comparison table stops at N=200 because that is where a like-for-like
 comparison stops being possible — **upstream minfi runs out of RAM first.** Its
-peak grows at ≈0.05 GiB/sample, so on this 32 GB host it needs ≈29 GiB at N=500
-and ≈57 GiB at N=1000, i.e. it OOMs past **N ≈ 600**. fastMethyl never
-materialises a cohort-sized matrix, so it just keeps going:
+peak grows at ≈0.05 GiB/sample, so on this 32 GB host it needs ≈29 GiB at N=500,
+≈57 GiB at N=1000 and ≈110 GiB at N=2000 — it OOMs past **N ≈ 600**. fastMethyl
+never materialises a cohort-sized matrix, so it just keeps going:
 
 | Samples | fastMethyl time | Peak RAM | Working set (avg) | GDS size |
 |--------:|----------------:|---------:|------------------:|---------:|
 |     500 |       126.8 s    | 12.6 GiB |      5.2 GiB       |  5.5 GB  |
 |    1000 |       247.0 s    | 16.3 GiB |      8.4 GiB       | 10.8 GB  |
+|    2000 |       509.6 s    | 14.9 GiB |     10.5 GiB       | 21.3 GB  |
 
-4 cores, 450k, uncompressed; throughput is a flat **≈0.25 s/sample**. The real
-footprint is the **working set** (≈5–8 GiB) — the higher *peak* is mostly the
-uncompressed GDS's reclaimable page cache (a 10.8 GB file at N=1000), not live
-data, which is why the host never came under memory pressure. So fastMethyl's
-ceiling here is **disk, not RAM**: a 450k 1000-sample uncompressed GDS is ≈11 GB
-(EPIC ≈2×), so the scratch disk would hold several thousand samples — while minfi
-cannot produce these at all on a 32 GB machine. (These two rows use a relaxed
-I/O cap, so their per-sample time is not directly comparable to the throttled
-50–200 rows above; the point is feasibility and the bounded footprint.)
+4 cores, 450k, uncompressed. Throughput is a flat **≈0.25 s/sample** all the way
+to N=2000 (≈8.5 min) and the GDS grows linearly. The real footprint is the
+**working set** (≈5–11 GiB); the *peak* is mostly the uncompressed GDS's
+reclaimable page cache, so it is writeback-/reclaim-noisy and not even monotonic
+in N (N=2000 peaks below N=1000), and the host never came under memory pressure.
+fastMethyl's ceiling here is therefore **disk, not RAM**: a 450k GDS is ≈11 GB per
+1000 samples uncompressed (EPIC ≈2×), so the scratch disk would hold several
+thousand samples — while minfi cannot produce any of these on a 32 GB machine.
+(These rows use a relaxed I/O cap, so their per-sample time is not directly
+comparable to the throttled 50–200 rows above; the point is feasibility and the
+bounded footprint.)
+
+At **8 cores** the same cohorts run **≈25–30% faster** — 94.9 / 186.5 / 367.3 s
+for N=500 / 1000 / 2000 (≈0.185 s/sample, vs ≈0.25 s/sample at 4 cores) — and the
+host stayed at 20–25 GiB free throughout, so 8 cores is well within this 32 GB
+machine. This is the same read-bound scaling the core sweep below shows, now at
+cohort sizes minfi cannot reach. (Peak RAM at this scale is dominated by
+reclaimable page-cache/writeback timing and is too noisy to tabulate; the
+throughput and the comfortable host headroom are the reliable signals.)
 
 ### Scaling the reader across cores
 

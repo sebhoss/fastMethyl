@@ -87,6 +87,17 @@ bpCompress <- Sys.getenv("BENCH_COMPRESS", "LZ4_RA")
 naMeasure <- list(time = NA_real_, peak = NA_real_, avg = NA_real_, value = NULL)
 dir.create(scratch, showWarnings = FALSE, recursive = TRUE)
 
+# Remove every benchmark artifact this run writes into `scratch` -- cohort
+# symlink dirs and the (multi-GB, uncompressed) GDS files. Each pipeline unlinks
+# its own GDS on success, but a cohort that is OOM-killed mid-write leaves a
+# partial file behind; this sweep reclaims those too, so a sweep never lingers on
+# disk regardless of how a run ends. Called after each cohort and once at exit.
+.sweepScratch <- function() {
+  unlink(list.files(scratch, pattern = "^(bench_fm_|minfi_gds_|bench_cohort_)",
+                    full.names = TRUE),
+         recursive = TRUE, force = TRUE)
+}
+
 # Peak/average memory is read from the cgroup, not from a single process's RSS:
 # fastMethyl forks MulticoreParam workers, so a master-only RSS read would miss
 # them. memory.current accounts for the whole cgroup (master + workers + buffers)
@@ -284,6 +295,7 @@ for (n in Ns) {
     measure(function() suppressMessages(fmPipeline(coh)))
   gc(FALSE)
   unlink(coh$dir, recursive = TRUE)
+  .sweepScratch()   # reclaim any GDS a crashed cohort left behind
   speedup <- if (is.na(up$time) || is.na(fm$time)) NA_real_ else
     round(up$time / fm$time, 1)
   fm_gds <- if (is.null(fm$value) || is.na(fm$value)) NA_integer_ else
@@ -299,6 +311,7 @@ for (n in Ns) {
     upstream_avg_MiB = mib(up$avg),
     fastMethyl_avg_MiB = mib(fm$avg))
 }
+.sweepScratch()   # final safety net, in case the last cohort left anything
 cat(sprintf("\n=== IDAT -> QC'd %s GDS: time + peak memory (downstream analysis excluded) ===\n",
             if (nzchar(bpCompress)) bpCompress else "uncompressed"))
 print(do.call(rbind, rows), row.names = FALSE)
