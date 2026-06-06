@@ -17,9 +17,10 @@ importClassesFrom(minfi, RGChannelSet, RGChannelSetExtended)
 
 importFrom(BiocParallel,
            SerialParam, bplapply, bpnworkers, bpmapply, bptry, bpok)
-importFrom(gdsfmt, createfn.gds, add.gdsn, closefn.gds, addfolder.gdsn,
-           put.attr.gdsn, append.gdsn, readmode.gdsn, index.gdsn,
-           objdesp.gdsn, read.gdsn, delete.gdsn, rename.gdsn)
+importFrom(gdsfmt, createfn.gds, openfn.gds, add.gdsn, closefn.gds,
+           addfolder.gdsn, put.attr.gdsn, append.gdsn, readmode.gdsn,
+           index.gdsn, objdesp.gdsn, read.gdsn, delete.gdsn, rename.gdsn,
+           copyto.gdsn)
 importFrom(illuminaio, readIDAT)
 importFrom(DelayedArray, realize, getAutoRealizationBackend)
 importFrom(SummarizedExperiment, "colData<-")

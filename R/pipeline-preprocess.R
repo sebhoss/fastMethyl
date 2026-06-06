@@ -326,8 +326,18 @@ runPreprocess <- function(
   readerWorkers = 1L,
   verbose = 2L,
   BPPARAM = NULL,
+  compress = "LZ4_RA",
   .check_annotation = function(pkg) requireNamespace(pkg, quietly = TRUE)
 ) {
+  # `compress` is the gdsfmt codec for the matrix nodes. The default LZ4_RA keeps
+  # the GDS small; "" (no compression) writes ~2-3x faster (compression is the
+  # dominant cost) for a larger file. It does not change the values, so it is
+  # deliberately NOT part of the build key -- a cached GDS reads back identically
+  # whatever codec it was written with.
+  stopifnot(
+    "`compress` must be a single string (e.g. \"LZ4_RA\" or \"\")" =
+      is.character(compress) && length(compress) == 1L && !is.na(compress)
+  )
   parsed <- .validateArgs(
     dataDirectory         = dataDirectory,
     nonSpecificProbesPath = nonSpecificProbesPath,
@@ -438,6 +448,7 @@ runPreprocess <- function(
       drop_probes           = parsed$xReactiveProbes$TargetID,
       sample_detP_threshold = sampleDetPThreshold,
       probe_detP_threshold  = probeDetPThreshold,
+      compress              = compress,
       verbose               = verbose,
       BPPARAM               = BPPARAM
     )

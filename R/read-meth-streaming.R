@@ -331,6 +331,67 @@
   invisible(NULL)
 }
 
+# Compact ONE node into its own fresh GDS file and return that file's path. Reads
+# the source GDS read-only (the caller must have closed its writable handle
+# first, so forked workers can open it), so several of these can run in parallel
+# -- one per matrix node -- without sharing a handle. The chunked column-block
+# read keeps each worker's working set to one slab.
+.streamingCompactNodeToFile <- function(gds_path, node_name, keepProbes,
+                                        compress, block_cols) {
+  src <- openfn.gds(gds_path, readonly = TRUE)
+  on.exit(closefn.gds(src), add = TRUE)
+  old <- index.gdsn(src, node_name)
+  d <- objdesp.gdsn(old)$dim
+  tmp <- tempfile(fileext = ".gds")
+  dst <- createfn.gds(tmp)
+  newnode <- NULL
+  for (j0 in seq.int(1L, d[2L], by = block_cols)) {
+    ncols <- min(block_cols, d[2L] - j0 + 1L)
+    blk <- read.gdsn(old, start = c(1L, j0), count = c(d[1L], ncols))
+    blk <- blk[keepProbes, , drop = FALSE]
+    if (is.null(newnode)) {
+      newnode <- add.gdsn(dst, node_name, val = blk,
+                          compress = compress, closezip = FALSE)
+    } else {
+      append.gdsn(newnode, blk)
+    }
+  }
+  readmode.gdsn(newnode)
+  closefn.gds(dst)
+  tmp
+}
+
+# Parallel probe-QC compaction: the four matrix nodes are independent, so each is
+# compacted in its own worker into a temp file, then the master splices the
+# compacted nodes back via copyto.gdsn (a cheap node copy, not a re-compress).
+# The writable handle is closed first so workers can open the file read-only;
+# this function reopens it and returns the new open handle (the caller must
+# rebind it). The per-node block budget is divided by the worker count so the
+# concurrent slabs sum to the serial path's single-slab budget -- the flat-memory
+# invariant holds. Falls back to nothing here: the serial .streamingCompactRows
+# is used directly when there is only one worker.
+.streamingCompactParallel <- function(bmln, gds_path, node_order, keepProbes,
+                                      compress, block_cap, BPPARAM) {
+  nworkers <- max(1L, bpnworkers(BPPARAM))
+  block_cols <- max(1L, block_cap %/% nworkers)
+  closefn.gds(bmln)
+  tmps <- bplapply(node_order, .streamingCompactNodeToFile,
+                   gds_path = gds_path, keepProbes = keepProbes,
+                   compress = compress, block_cols = block_cols,
+                   BPPARAM = BPPARAM)
+  bmln <- openfn.gds(gds_path, readonly = FALSE)
+  # Delete every old node first so the copies can reuse the freed space rather
+  # than appending (keeps the file from bloating to old + compacted).
+  for (nm in node_order) delete.gdsn(index.gdsn(bmln, nm), force = TRUE)
+  for (i in seq_along(node_order)) {
+    s <- openfn.gds(tmps[[i]], readonly = TRUE)
+    copyto.gdsn(bmln, index.gdsn(s, node_order[[i]]))
+    closefn.gds(s)
+    unlink(tmps[[i]])
+  }
+  bmln
+}
+
 # Write the non-matrix scaffolding (fData, pData, history, paths) into the open
 # GDS once the matrix nodes have been streamed in. `annot_df` is the per-probe
 # annotation for the final (compacted) probe set, already aligned to the matrix
@@ -572,6 +633,11 @@ processMethArray <- function(basenames,
   }, add = TRUE)
 
   nworkers <- max(1L, bpnworkers(BPPARAM))
+  # The per-block forced GC (below) only earns its keep when the backend forks
+  # multiple workers against the master heap. A non-forking backend (SerialParam,
+  # SnowParam) has no shared heap to COW-inflate, and a single worker cannot
+  # multiply anything, so the collection is pure overhead there and is skipped.
+  forking <- methods::is(BPPARAM, "MulticoreParam") && nworkers > 1L
   # Bound a block's working set (worker results + assembled block + clip
   # temporaries) by capping columns per block at a fixed element budget, and at
   # nworkers * 4 so a block is never larger than the parallel fan-out needs.
@@ -590,8 +656,15 @@ processMethArray <- function(basenames,
       k, block_size
     ))
   }
+  # Split the streaming wall-clock into the parallel worker-compute (the
+  # .bpmapply_try call) and the serial master-write (assemble + betas +
+  # compress + append), reported at verbose >= 2. The master-write is dominated
+  # by LZ4 compression and is the serial floor of the streaming pass.
+  compute_secs <- 0
+  write_secs <- 0
   start_t <- Sys.time()
   for (bi in blocks) {
+    .t0 <- proc.time()[[3]]
     block_res <- .bpmapply_try(
       FUN = .streamingComputeColumns,
       iter_args = list(
@@ -605,6 +678,7 @@ processMethArray <- function(basenames,
       ),
       BPPARAM = BPPARAM, label = "processMethArray"
     )
+    .t1 <- proc.time()[[3]]
     Mblk <- vapply(block_res, `[[`, integer(nLoci), "Meth")
     Ublk <- vapply(block_res, `[[`, integer(nLoci), "Unmeth")
     Pblk <- vapply(block_res, `[[`, numeric(nLoci), "detP")
@@ -655,20 +729,30 @@ processMethArray <- function(basenames,
         done, k, 100 * done / k, elapsed, done / max(elapsed, 0.001)
       ))
     }
-    # Drop this block's matrices and force a collection before the next
-    # iteration forks its workers. MulticoreParam workers copy-on-write against
-    # the master heap (a worker's GC touches the whole heap), so leaving a
-    # block's ~GB of now-collectable matrices live at fork time multiplies them
-    # by the worker count -- the per-block growth that drove the peak up to OOM
-    # on a large cohort. Collecting here keeps the fork base minimal.
+    # Drop this block's matrices and, when the next iteration will fork workers,
+    # force a collection first. MulticoreParam workers copy-on-write against the
+    # master heap (a worker's GC touches the whole heap), so leaving a block's
+    # ~GB of now-collectable matrices live at fork time multiplies them by the
+    # worker count -- the per-block growth that drove the peak up to OOM on a
+    # large cohort. Collecting here keeps the fork base minimal; for a
+    # non-forking backend it is skipped (see `forking`).
     rm(Mblk, Ublk, Pblk)
-    gc(FALSE)
+    if (forking) gc(FALSE)
+    compute_secs <- compute_secs + (.t1 - .t0)
+    write_secs <- write_secs + (proc.time()[[3]] - .t1)
   }
   if (verbose >= 1L) {
     elapsed <- as.numeric(Sys.time() - start_t, units = "secs")
     message(sprintf(
       "[processMethArray] Streamed in %.1f seconds (%.1f file/s)",
       elapsed, k / max(elapsed, 0.001)
+    ))
+  }
+  if (verbose >= 2L) {
+    message(sprintf(
+      paste0("[processMethArray] streaming split: worker-compute %.1fs ",
+             "(parallel) + master-write %.1fs (serial)"),
+      compute_secs, write_secs
     ))
   }
 
@@ -718,8 +802,16 @@ processMethArray <- function(basenames,
         nLoci, sum(keepProbes)
       ))
     }
-    for (nm in node_order) {
-      .streamingCompactRows(bmln, nm, keepProbes, compress, block_size)
+    if (max(1L, bpnworkers(BPPARAM)) > 1L) {
+      # Compact the four nodes in parallel (one worker per node); reopens and
+      # rebinds the GDS handle. block_cap (the memory-bound width), not the
+      # streaming fan-out block_size, is the natural read width here.
+      bmln <- .streamingCompactParallel(bmln, gds_path, node_order, keepProbes,
+                                        compress, block_cap, BPPARAM)
+    } else {
+      for (nm in node_order) {
+        .streamingCompactRows(bmln, nm, keepProbes, compress, block_cap)
+      }
     }
   }
 

@@ -10,6 +10,14 @@ A performance layer over [minfi](https://bioconductor.org/packages/minfi) and
 methylation cohorts. It does **not** reimplement them — it imports them and
 adds a single, fast, memory-bounded entry point: **`analyze()`**.
 
+> **Based on the work of Marisol Herrera-Rivero.** The methylation-preprocessing
+> approach this package implements and accelerates is from her work; **please
+> cite the paper** if you use fastMethyl:
+>
+> Herrera-Rivero, M., Nauck, M., Berger, K., & Baune, B. T. (2025). Immune DNA
+> methylation in depression: cross-sectional and longitudinal study. *BJPsych
+> open*, 11(4), e129. <https://doi.org/10.1192/bjo.2025.10065>
+
 > **Notice.** This package — the streaming preprocessing engine, the `analyze()`
 > driver, and this documentation — was prepared with the help of
 > [Claude](https://claude.ai/) (Anthropic's AI assistant) acting under the
@@ -37,6 +45,35 @@ adds a single, fast, memory-bounded entry point: **`analyze()`**.
 (`dasen`) and outlier detection (`outlyx`) live in **your** function, so you
 control their order — the statistically correct one being **outliers first,
 then normalise**. Omit the function to just get the QC'd GDS.
+
+## Speed vs. disk size: the `compress` knob
+
+> **GDS compression is the single biggest cost in `analyze()` — and it's
+> optional.** Writing the matrices with `LZ4_RA` (the default) keeps the GDS
+> small but is **~2–3× slower** than writing them uncompressed, because the
+> compression CPU dominates both the streaming write *and* the probe-QC
+> compaction. Pass **`compress = ""`** to skip it:
+
+```r
+analyze(..., compress = "")     # ~2-3x faster; larger GDS (~1.5-2x)
+analyze(...)                    # default compress = "LZ4_RA": small GDS, slower
+```
+
+It changes only *how the data is stored*, never the values — the GDS is
+**bigmelon-compatible either way** (uncompressed nodes read back identically and
+still support the row-subset reads `dasen`/`outlyx` need), and it is not part of
+the build-key cache. Recommendations:
+
+| Situation | Use | Why |
+|---|---|---|
+| **You re-run often** (development, threshold tuning) | `compress = ""` | the time saved each run dwarfs the disk cost; the file is transient |
+| **Large cohort + ample/fast disk** | `compress = ""` | the absolute time saving grows with cohort size (minutes on 1000-sample EPIC) |
+| **Archiving, sharing, or disk-constrained** | `"LZ4_RA"` (default) | an uncompressed 1000-sample EPIC GDS can be tens of GB |
+| **One-off run you keep long-term** | `"LZ4_RA"` (default) | you pay the compression once, save disk forever |
+| **Small cohort** (≤ a few hundred) | either | the time difference is seconds; pick by whether you keep the file |
+
+In short: **optimise for runtime with `compress = ""` when the GDS is a
+throwaway intermediate; keep the default when the GDS is an artifact you store.**
 
 ## Benchmark
 

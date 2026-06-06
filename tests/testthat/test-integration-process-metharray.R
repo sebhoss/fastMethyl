@@ -136,6 +136,61 @@ test_that("probe-QC row compaction preserves every matrix node (betas included)"
     }
 })
 
+test_that("parallel probe-QC compaction (>1 worker) is byte-identical to serial", {
+    skip_if_slow()
+    skip_if_no_gds()
+    f <- .fixtures()
+    probe_thr <- 0.01
+    # With more than one worker, compaction runs the parallel path: it closes and
+    # reopens the GDS, compacts each of the four nodes in its own worker, and
+    # splices them back with copyto.gdsn. The result must be byte-identical to the
+    # serial single-worker rewrite (which the test above pins to the reference).
+    serial_path <- tempfile(fileext = ".gds")
+    par_path <- tempfile(fileext = ".gds")
+    on.exit(unlink(c(serial_path, par_path)), add = TRUE)
+    processMethArray(f$basenames, gds_path = serial_path,
+                     probe_detP_threshold = probe_thr, verbose = 0L,
+                     BPPARAM = BiocParallel::SerialParam())
+    processMethArray(f$basenames, gds_path = par_path,
+                     probe_detP_threshold = probe_thr, verbose = 0L,
+                     BPPARAM = BiocParallel::MulticoreParam(workers = 2L))
+    rd <- function(path, node) {
+        g <- gdsfmt::openfn.gds(path)
+        on.exit(gdsfmt::closefn.gds(g), add = TRUE)
+        gdsfmt::read.gdsn(gdsfmt::index.gdsn(g, node))
+    }
+    keep_p <- which(rowSums(f$full$detP >= probe_thr) == 0L)
+    expect_lt(length(keep_p), length(f$full$features))   # compaction fired
+    for (node in c("betas", "methylated", "unmethylated", "pvals")) {
+        expect_identical(rd(par_path, node), rd(serial_path, node))
+    }
+})
+
+test_that("uncompressed (compress = '') GDS is value-identical to LZ4_RA", {
+    skip_if_slow()
+    skip_if_no_gds()
+    f <- .fixtures()
+    # The compress codec changes only the on-disk storage, never the values, and
+    # an uncompressed GDS is still bigmelon-readable. Read both back and compare;
+    # the uncompressed file must also be larger (nothing was compressed).
+    lz4_path <- tempfile(fileext = ".gds")
+    raw_path <- tempfile(fileext = ".gds")
+    on.exit(unlink(c(lz4_path, raw_path)), add = TRUE)
+    processMethArray(f$basenames, gds_path = lz4_path, verbose = 0L,
+                     compress = "LZ4_RA")
+    processMethArray(f$basenames, gds_path = raw_path, verbose = 0L,
+                     compress = "")
+    rd <- function(path, node) {
+        g <- gdsfmt::openfn.gds(path)
+        on.exit(gdsfmt::closefn.gds(g), add = TRUE)
+        gdsfmt::read.gdsn(gdsfmt::index.gdsn(g, node))
+    }
+    for (node in c("betas", "methylated", "unmethylated", "pvals")) {
+        expect_identical(rd(raw_path, node), rd(lz4_path, node))
+    }
+    expect_gt(file.size(raw_path), file.size(lz4_path))
+})
+
 test_that("sample_detP_threshold drops columns whose colMeans(detP) clears the threshold", {
     skip_if_slow()
     skip_if_no_gds()
