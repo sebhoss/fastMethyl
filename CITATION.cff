@@ -15,7 +15,7 @@ authors:
   - given-names: Sebastian
     family-names: Hoß
     email: seb@xn--ho-hia.de
-version: 2026.0.6061210
+version: 2026.0.6061400
 date-released: "2026-06-06"
 license: Artistic-2.0
 url: "https://github.com/sebhoss/fastMethyl"
