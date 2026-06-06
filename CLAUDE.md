@@ -160,19 +160,28 @@ paren-aligned hanging indent; the linter is picky about the exact column.
 - **Column-streaming GDS write (the core of `processMethArray`).** Samples are
   processed in column blocks: workers compute each sample's
   methylated/unmethylated/detection-p columns in parallel, and the master
-  **appends** the surviving columns straight into the extendable,
-  LZ4_RA-compressed `betas`/`methylated`/`unmethylated`/`pvals` nodes. Full
-  matrices are never held in RAM, so **peak memory is flat in cohort size** — a
-  1000-sample EPIC run peaks at roughly the same memory as a 100-sample one.
-  Do not reintroduce whole-matrix assembly. `dev/streaming-writes-design.md`
-  documents the design and its trade-offs.
+  **appends** the surviving columns straight into the extendable
+  `betas`/`methylated`/`unmethylated`/`pvals` nodes, written with the `compress`
+  codec (**default `compress = ""`, uncompressed**; pass `LZ4_RA` to shrink — see
+  the Performance section). Full matrices are never held in RAM, so **peak memory
+  grows far slower than cohort size** — a 1000-sample EPIC run peaks far below a
+  whole-matrix build. The thing being avoided: holding `Meth`+`Unmeth`+`detP`+
+  `Betas` at once is **24 bytes/cell** (`int+int+double+double`), a ~21 GB floor
+  for a 1000-sample EPIC cohort. `append.gdsn` extends a node along the sample
+  (column) dimension and works on a still-in-write-mode compressed node; once a
+  node hits readmode it cannot be modified, which is why probe-row drops need the
+  compaction rewrite rather than an in-place edit. The `layout = "methylset"`
+  branch has no GDS to stream into and still assembles matrices — streaming is the
+  `gds` path only. Do not reintroduce whole-matrix assembly.
 - **QC interacts with streaming asymmetrically.** Sample QC
   (`sample_detP_threshold`) is per-column and decided as each sample streams
   past (dropped samples are simply not appended). Probe QC
   (`probe_detP_threshold`) is a reduction over all surviving samples, so its
   mask is known only after the full pass; it is accumulated into a per-probe
   boolean and, when it drops any probe, the matrix nodes are compacted to their
-  final probe set by a **chunked row-subset rewrite** (`.streamingCompactRows`).
+  final probe set by a **chunked row-subset rewrite**, run in parallel across the
+  four independent nodes (`.streamingCompactParallel`, each spliced back via
+  `copyto.gdsn`; `.streamingCompactRows` is the 1-worker fallback).
   With all QC args `NULL` the GDS values equal
   `es2gds(preprocessRaw(readMethArray(...)))`.
 - **Integer-indexed worker hot path.** Both readers pre-compute integer
@@ -200,6 +209,73 @@ paren-aligned hanging indent; the linter is picky about the exact column.
   matching key reuses the GDS silently, a missing one reuses with a warning, a
   mismatched one rebuilds. A failed/partial GDS write is unlinked so it is never
   mistaken for a valid cache.
+
+## Performance: what moves the needle, and the dead ends
+
+Recorded so the same experiments are not repeated; this is the operative record
+(distilled from `dev/` scratch design docs that have since been folded in here).
+The harness is `dev/benchmark_analysis.R`, run **only** via `dev/run-benchmark.sh`
+(a `systemd-run --user --scope` envelope — no resource caps belong in `.ilo.rc`).
+Figures are 450k, the fixed ~14/17 GiB envelope, N = 50/100/200.
+
+- **GDS compression is the single biggest runtime cost — which is why `compress`
+  defaults to `""` (uncompressed).** Opt-in `LZ4_RA` is **~2× slower** (44.7/76.4/
+  144.3 s vs 23.1/34.8/69.2 s at 4 cores) for only **~1.3× smaller** files —
+  methylation intensity/beta matrices barely compress. `compress` threads
+  `analyze()` → `runPreprocess()` → `processMethArrayExp()` to the node writes and
+  compaction, is value-identical and bigmelon-readable either way, and is
+  deliberately **not** a build-key field.
+- **The structural win is NOT compression — don't re-investigate that.** Both
+  fastMethyl and the upstream minfi benchmark write the same matrices, so they pay
+  ~equal *absolute* compression cost — but that is ~7% of minfi's serial runtime
+  and ~50% of fastMethyl's. Removing it from both *widens* the gap (4 cores,
+  N=200: **4.6× compressed → 8.9× uncompressed**; minfi 612.8 s vs fastMethyl
+  69.2 s). The lead is the parallel read + fused streaming, not a faster codec.
+- **Core scaling depends on the codec.** Uncompressed (the default) is
+  *read-bound* at large N, so more cores help: N=200 goes 69 → 65 → **50 s** over
+  4 → 8 → 12 workers (~27%); at small N per-worker overhead dominates and extra
+  cores regress (12 is slowest at N=50). Under opt-in `LZ4_RA` the serial
+  master-side compression caps it — 4 → 8 → 12 buys almost nothing (144 → 135 →
+  136 s). Either way peak RAM climbs with worker count (**COW inflation**, below).
+- **Implemented and kept — parallel probe-QC compaction**
+  (`.streamingCompactParallel`): the four matrix nodes are independent, so each is
+  compacted to a temp GDS by a worker and the master splices it back with
+  `copyto.gdsn` (a cheap **raw block copy, not a re-encode**). ~10% end-to-end at
+  `LZ4_RA` (near-free once uncompressed). Trade-off: the four concurrent node
+  buffers raise the N=200 peak, so peak is not strictly flat in N.
+  `.streamingCompactRows` (serial) is the `nworkers == 1` fallback.
+- **Tried and REVERTED — do not re-attempt without new evidence:**
+  - *Betas-to-workers* — byte-identical but neutral-to-negative under
+    `MulticoreParam`: shipping a third column back costs more IPC than the
+    master's cheap `pmax(M,0)/(pmax(M,0)+pmax(U,0))` saves. **Master computes betas.**
+  - *Compute/write overlap in the streaming loop* — achievable ceiling ~9 s, not
+    worth the complexity.
+  - *Sex-probe address cache* — a no-op (the lookup is already negligible).
+  - *Unconditional `gc()` per block* — now `if (forking) gc(FALSE)`; for
+    `MulticoreParam` effectively a no-op, kept only to bound the non-forking path.
+  - *Parallel `dasen`* — serial quantile barrier, net-negative prototype. The one
+    un-pulled lever on the analysis phase is bigmelon's `dasenrank` (subsamples the
+    reference — an approximation, so opt-in only, with an equivalence check).
+
+### Memory / copy-on-write inflation (multi-worker forks)
+
+`MulticoreParam` forks; a forked worker COW-breaks shared master pages two ways:
+(1) the **GC mark phase** writes a mark bit into every reachable object, copying
+~the whole live master heap per worker that GCs; (2) under R ≥ 4.0 **refcounting**,
+even *reading* a shared object writes its header — an irreducible floor that GC
+suppression cannot beat. The master heap is already minimised at every fork point
+(`rm()`+`gc(FALSE)` before and within the block loop; the ~1.8 GB annotation frame
+is freed before the reading pass, the fData frame built *after* it), so the live
+heap at a fork is only ~40–55 MB (the index tables, which workers need). **Caveat:
+the benchmark overstates production COW** — its pre-warmed ~2 GB annotation parent
+is forked against, which a real `analyze()` run avoids. So **measure real
+production COW (`Private_Dirty` per worker under `analyze()`, not the harness)
+before building any mitigation.** Ranked options, none yet shipped: worker
+GC-suppression (soft, 450k-only); a budget-capped worker count (OOM-safety, not
+speed — best near-term ROI); `SnowParam` (no shared heap → a *hard* memory bound,
+but never faster than fork — reserve for EPICv2 / Windows / memory-critical).
+Dropped: mmap'd indices (~1–3% of peak), fork-once pools (inflation is
+per-running-worker-GC, not per-fork-event).
 
 ## Project-specific rules
 

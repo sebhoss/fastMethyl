@@ -13,7 +13,7 @@
 }
 \details{
   The single public entry point is \code{\link{analyze}}. One call validates
-  the inputs and builds a QC'd, LZ4_RA-compressed, bigmelon-compatible GDS from
+  the inputs and builds a QC'd, bigmelon-compatible GDS from
   raw IDATs -- a fused, column-streaming pass (read + detection p-value + raw
   preprocessing + sample/probe QC) whose peak memory stays bounded regardless
   of cohort size -- then optionally normalises it (\code{dasen}), optionally

@@ -5,7 +5,7 @@
   v <- utils::packageVersion("fastMethyl")
   msg <- c(
     sprintf("fastMethyl %s", v),
-    "  analyze(): one call -- preprocess (config -> QC'd, LZ4_RA-compressed",
+    "  analyze(): one call -- preprocess (config -> QC'd, bigmelon-compatible",
     "    GDS) -> your analysis function on the open GDS -> closed for you.",
     "    Omit FUN to just build the GDS; normalise/outlier-detect inside FUN.",
     "    See system.file('scripts', 'pipeline.R', package = 'fastMethyl')",

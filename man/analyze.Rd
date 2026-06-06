@@ -6,7 +6,7 @@
 }
 \description{
   The package's single entry point. One call validates the inputs and builds a
-  QC'd, LZ4_RA-compressed, bigmelon-compatible GDS from raw IDATs, optionally
+  QC'd, bigmelon-compatible GDS from raw IDATs, optionally
   hands the open GDS handle to a user-supplied function \code{FUN}, and
   \strong{guarantees the GDS is closed afterwards} -- on normal return and on
   error.

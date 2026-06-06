@@ -326,14 +326,16 @@ runPreprocess <- function(
   readerWorkers = 1L,
   verbose = 2L,
   BPPARAM = NULL,
-  compress = "LZ4_RA",
+  compress = "",
   .check_annotation = function(pkg) requireNamespace(pkg, quietly = TRUE)
 ) {
-  # `compress` is the gdsfmt codec for the matrix nodes. The default LZ4_RA keeps
-  # the GDS small; "" (no compression) writes ~2-3x faster (compression is the
-  # dominant cost) for a larger file. It does not change the values, so it is
-  # deliberately NOT part of the build key -- a cached GDS reads back identically
-  # whatever codec it was written with.
+  # `compress` is the gdsfmt codec for the matrix nodes. The default "" (no
+  # compression) writes ~2x faster -- compression is the single dominant cost in
+  # the whole pipeline -- for a file only ~1.3x larger, so it is the right default
+  # for a working GDS. Pass "LZ4_RA" to shrink the file for archiving/sharing at
+  # the cost of runtime. It does not change the values, so it is deliberately NOT
+  # part of the build key -- a cached GDS reads back identically whatever codec it
+  # was written with.
   stopifnot(
     "`compress` must be a single string (e.g. \"LZ4_RA\" or \"\")" =
       is.character(compress) && length(compress) == 1L && !is.na(compress)

@@ -14,8 +14,9 @@
 #
 # Samples are processed in column blocks: workers compute each sample's
 # methylated / unmethylated / detection-p columns in parallel, and the master
-# appends the surviving columns straight into the extendable, LZ4_RA-compressed
-# betas / methylated / unmethylated / pvals nodes. Peak RAM is therefore one
+# appends the surviving columns straight into the extendable betas / methylated /
+# unmethylated / pvals nodes (written with the `compress` codec, uncompressed by
+# default). Peak RAM is therefore one
 # block, not the whole cohort -- the property that lets large EPIC cohorts run
 # without exhausting memory.
 #
@@ -302,8 +303,9 @@
 # Drop the rows flagged by !keepProbes from an already-streamed matrix node, in
 # place in the open GDS. Probe QC is only known after the full streaming pass,
 # by which point every probe row has been written; this compacts a node to its
-# final probe set by reading it back in column blocks (LZ4_RA supports random
-# hyperslab reads), subsetting rows, and re-emitting into a fresh node that
+# final probe set by reading it back in column blocks (both uncompressed and
+# LZ4_RA nodes support random hyperslab reads), subsetting rows, and re-emitting
+# into a fresh node that
 # replaces the original. Chunked, so the rewrite never holds the full node in
 # RAM. Only invoked when probe_detP_threshold actually dropped probes.
 .streamingCompactRows <- function(bmln, node_name, keepProbes, compress,
@@ -464,7 +466,7 @@ processMethArray <- function(basenames,
                              drop_probes = NULL,
                              sample_detP_threshold = NULL,
                              probe_detP_threshold = NULL,
-                             compress = "LZ4_RA",
+                             compress = "",
                              verbose = 0L,
                              BPPARAM = SerialParam()) {
   verbose <- .normalize_verbose(verbose)
@@ -858,7 +860,7 @@ processMethArrayExp <- function(base = NULL,
                                 drop_sex_chromosomes = TRUE,
                                 sample_detP_threshold = NULL,
                                 probe_detP_threshold = NULL,
-                                compress = "LZ4_RA",
+                                compress = "",
                                 verbose = 0L,
                                 BPPARAM = SerialParam()) {
   # ---- input validation -------------------------------------------------

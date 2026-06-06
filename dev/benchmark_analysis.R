@@ -4,14 +4,15 @@
 # Benchmarks fastMethyl's analyze() preprocessing against the upstream minfi
 # pipeline that produces the same QC'd data, across cohort size N.
 #
-# Scope: this measures IDAT -> QC'd, LZ4_RA-compressed GDS, the artifact both
-# ecosystems produce before any analysis. Upstream does it as
-# read.metharray.exp + detectionP + preprocessRaw + QC + a compressed GDS write;
-# fastMethyl does it as analyze()'s single fused streaming pass. Both write the
-# same four matrix nodes with the same LZ4_RA compression, so both pay the
-# identical write + compression cost (bigmelon's es2gds writer is not used on the
-# upstream side because it stores uncompressed, which would understate that
-# cost). What IS excluded from both columns is the downstream bigmelon *analysis*
+# Scope: this measures IDAT -> QC'd bigmelon GDS, the artifact both ecosystems
+# produce before any analysis. Upstream does it as read.metharray.exp +
+# detectionP + preprocessRaw + QC + a GDS write; fastMethyl does it as analyze()'s
+# single fused streaming pass. Both write the same four matrix nodes with the SAME
+# codec (BENCH_COMPRESS, default LZ4_RA; "" = uncompressed), so both pay the
+# identical write/compression cost (bigmelon's es2gds writer is not used on the
+# upstream side because it would impose its own node layout). BENCH_COMPRESS=""
+# removes compression symmetrically, isolating the structural read+streaming win.
+# What IS excluded from both columns is the downstream bigmelon *analysis*
 # (dasen, outlyx, prcomp, estimateCellCounts.gds): that code is identical
 # regardless of which reader produced the GDS, so timing it would only add the
 # same work to both.
@@ -183,11 +184,13 @@ makeCohort <- function(n) {
 
 # Upstream minfi: read + detection-p + raw preprocess + the same QC, then write
 # the QC'd matrices to a GDS that matches fastMethyl's output -- same four nodes,
-# same LZ4_RA compression. bigmelon's es2gds() is deliberately NOT used: it is
-# the standard MethylSet->GDS writer but stores the matrices UNCOMPRESSED, so it
-# would let the upstream column skip the compression work fastMethyl performs.
-# Writing the nodes through gdsfmt with compress = "LZ4_RA" makes both columns
-# produce the same compressed artifact and pay the identical compression cost.
+# same codec. bigmelon's es2gds() is deliberately NOT used: it is the standard
+# MethylSet->GDS writer but stores the matrices UNCOMPRESSED, so it would let the
+# upstream column skip the compression work fastMethyl performs. Writing the
+# nodes through gdsfmt with the SAME `compress` codec as the fastMethyl side
+# (BENCH_COMPRESS, default LZ4_RA) makes both columns produce the same artifact
+# and pay the identical write/compression cost -- so BENCH_COMPRESS="" removes it
+# symmetrically from both sides, isolating the structural (read + streaming) win.
 # The downstream bigmelon *analysis* (dasen/outlyx/...) is identical for both and
 # stays out of both columns.
 minfiPipeline <- function(coh) {
@@ -208,13 +211,13 @@ minfiPipeline <- function(coh) {
   detPQC <- detP[probeMask, , drop = FALSE]
   gp <- tempfile("minfi_gds_", tmpdir = scratch, fileext = ".gds")
   gf <- createfn.gds(gp)
-  add.gdsn(gf, "betas",        getBeta(msetQC),   compress = "LZ4_RA",
+  add.gdsn(gf, "betas",        getBeta(msetQC),   compress = bpCompress,
            closezip = TRUE)
-  add.gdsn(gf, "methylated",   getMeth(msetQC),   compress = "LZ4_RA",
+  add.gdsn(gf, "methylated",   getMeth(msetQC),   compress = bpCompress,
            closezip = TRUE)
-  add.gdsn(gf, "unmethylated", getUnmeth(msetQC), compress = "LZ4_RA",
+  add.gdsn(gf, "unmethylated", getUnmeth(msetQC), compress = bpCompress,
            closezip = TRUE)
-  add.gdsn(gf, "pvals",        detPQC,            compress = "LZ4_RA",
+  add.gdsn(gf, "pvals",        detPQC,            compress = bpCompress,
            closezip = TRUE)
   closefn.gds(gf)
   unlink(gp)
@@ -296,6 +299,6 @@ for (n in Ns) {
     upstream_avg_MiB = mib(up$avg),
     fastMethyl_avg_MiB = mib(fm$avg))
 }
-cat("\n=== IDAT -> QC'd LZ4_RA GDS: time + peak memory",
-    "(downstream analysis excluded) ===\n")
+cat(sprintf("\n=== IDAT -> QC'd %s GDS: time + peak memory (downstream analysis excluded) ===\n",
+            if (nzchar(bpCompress)) bpCompress else "uncompressed"))
 print(do.call(rbind, rows), row.names = FALSE)
