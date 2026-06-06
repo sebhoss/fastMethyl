@@ -316,7 +316,7 @@ res <- analyze(
   targetPattern         = "batch1",   # expects samplesheet_batch1.csv in dataDirectory
   datasetClass          = "my_study", # output GDS is my_study.gds
   annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
-  readerWorkers         = parallel::detectCores(),  # parallel reads; see below
+  readerWorkers         = min(parallel::detectCores(), 16L),  # parallel reads; cap so containers/huge boxes don't oversubscribe -- see below
   FUN = function(gds, res) {
     outliers <- outlyx(gds, plot = FALSE)             # 1. detect on RAW betas
     dasen(gds, node = "normbetas")                    # 2. then normalise
@@ -367,7 +367,7 @@ res <- analyze(
   targetPattern         = "batch1",
   datasetClass          = "my_study",
   annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
-  readerWorkers         = parallel::detectCores())
+  readerWorkers         = min(parallel::detectCores(), 16L))
 res$gds_path             # the QC'd GDS; open it with bigmelon/gdsfmt for any analysis
 ```
 
