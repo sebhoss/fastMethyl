@@ -8,7 +8,7 @@ SPDX-License-Identifier: Artistic-2.0
 A performance layer over [minfi](https://bioconductor.org/packages/minfi) and
 [bigmelon](https://bioconductor.org/packages/bigmelon) for large Illumina
 methylation cohorts. It does **not** reimplement them — it imports them and
-adds a single, fast, memory-bounded entry point: **`analyze()`**.
+adds a single, fast, memory-lean entry point: **`analyze()`**.
 
 > **Based on the work of Marisol Herrera-Rivero.** The methylation-preprocessing
 > approach this package implements and accelerates is from her work; **please
@@ -35,9 +35,9 @@ adds a single, fast, memory-bounded entry point: **`analyze()`**.
 1. **validates** every input, then builds a QC'd,
    bigmelon-compatible **GDS** from raw IDATs in a fused, **column-streaming**
    pass (read + detection p-value + raw preprocessing + sample/probe QC). Full
-   cohort-sized matrices are never assembled in RAM, so **peak memory stays
-   bounded regardless of cohort size** — a 1000-sample EPIC run peaks at roughly
-   the same memory as a 100-sample one;
+   cohort-sized matrices are never assembled in RAM, so **peak memory grows far
+   more slowly than the cohort** — large cohorts that make upstream minfi run out
+   of RAM stay feasible (see the benchmark below);
 2. optionally runs **your analysis function** on the open GDS handle; and
 3. **closes the GDS for you** — on normal return *and* on error.
 
