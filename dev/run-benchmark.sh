@@ -98,6 +98,13 @@ mem_high=$(ceil_gib $(( abs_mib * 105 / 100 )))
 mem_max=$(ceil_gib $(( abs_mib * 130 / 100 )))
 [ "$mem_high" -lt 2 ] && mem_high=2
 [ "$mem_max" -le "$mem_high" ] && mem_max=$(( mem_high + 1 ))
+# Explicit envelope override (whole GiB). The auto-size assumes the minfi side
+# runs (its peak is ~51*N MiB); a fastMethyl-only large-N sweep needs only a few
+# GiB, so the computed cap can exceed host RAM. Set MEM_MAX/MEM_HIGH to pin a
+# host-safe ceiling -- the cgroup then OOM-kills an over-budget run instead of
+# wedging the host.
+[ -n "${MEM_HIGH:-}" ] && mem_high="$MEM_HIGH"
+[ -n "${MEM_MAX:-}" ] && mem_max="$MEM_MAX"
 
 # Whole disk backing the scratch dir (io.max keys on the disk request queue).
 if [ -n "${IO_DEVICE:-}" ]; then

@@ -130,6 +130,29 @@ gap opens to **45% less at N=200** and keeps widening — exactly the property t
 keeps large EPIC cohorts bounded where upstream OOMs (a real 582-sample EPIC
 cohort ran in ≈14.6 GB; see the Notice above).
 
+### Past where minfi fits: N = 500 and 1000
+
+The comparison table stops at N=200 because that is where a like-for-like
+comparison stops being possible — **upstream minfi runs out of RAM first.** Its
+peak grows at ≈0.05 GiB/sample, so on this 32 GB host it needs ≈29 GiB at N=500
+and ≈57 GiB at N=1000, i.e. it OOMs past **N ≈ 600**. fastMethyl never
+materialises a cohort-sized matrix, so it just keeps going:
+
+| Samples | fastMethyl time | Peak RAM | Working set (avg) | GDS size |
+|--------:|----------------:|---------:|------------------:|---------:|
+|     500 |       126.8 s    | 12.6 GiB |      5.2 GiB       |  5.5 GB  |
+|    1000 |       247.0 s    | 16.3 GiB |      8.4 GiB       | 10.8 GB  |
+
+4 cores, 450k, uncompressed; throughput is a flat **≈0.25 s/sample**. The real
+footprint is the **working set** (≈5–8 GiB) — the higher *peak* is mostly the
+uncompressed GDS's reclaimable page cache (a 10.8 GB file at N=1000), not live
+data, which is why the host never came under memory pressure. So fastMethyl's
+ceiling here is **disk, not RAM**: a 450k 1000-sample uncompressed GDS is ≈11 GB
+(EPIC ≈2×), so the scratch disk would hold several thousand samples — while minfi
+cannot produce these at all on a 32 GB machine. (These two rows use a relaxed
+I/O cap, so their per-sample time is not directly comparable to the throttled
+50–200 rows above; the point is feasibility and the bounded footprint.)
+
 ### Scaling the reader across cores
 
 fastMethyl's reader is parallel; upstream minfi reads serially and is therefore
