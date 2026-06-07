@@ -335,6 +335,88 @@ fastest option and the right one for a working file. If you intend to archive or
 share the GDS, pass `compress = "LZ4_RA"` to shrink it; see
 [Speed vs. disk size](#speed-vs-disk-size-the-compress-knob).
 
+### Parameters
+
+`FUN` is `analyze()`'s own argument; **every other argument is forwarded to the
+preprocessing step**, so the full set is below. The ones whose value takes some
+thought link to a dedicated guidance section.
+
+**Required** — every run must supply these (they have no default):
+
+| Parameter | What it is | Picking a value |
+|---|---|---|
+| `dataDirectory` | Directory holding the raw `*_Grn.idat` / `*_Red.idat` files **and** the samplesheet. | Point it at the folder your IDATs live in; both `.idat` and `.idat.gz` are accepted. |
+| `targetPattern` | Selects the samplesheet by name — fastMethyl reads `samplesheet_<targetPattern>.csv` from `dataDirectory`. | Name the sheet to match: `targetPattern = "batch1"` ⇒ `samplesheet_batch1.csv`. The sheet needs a `Basename` column whose entries resolve to the IDAT basenames. |
+| `datasetClass` | Names the output — the GDS is written to `<datasetClass>.gds` in the working directory. | Any short cohort identifier; it also names the [build-cache](#the-build-cache-and-forcerebuild) sidecar. |
+| `annotationPackage` | The Illumina annotation package for **your array type** (probe annotation, incl. the sex-chromosome map). | Must match the array **and** be installed. 450k: `IlluminaHumanMethylation450kanno.ilmn12.hg19`; EPIC v1: `IlluminaHumanMethylationEPICanno.ilm10b4.hg19`. A wrong/missing package fails validation before any IDAT is read. |
+| `nonSpecificProbesPath` | CSV of cross-reactive / non-specific probes to drop; must contain a `TargetID` column (one probe ID per row). | Use a published cross-reactive list for your array (e.g. Chen et al. 2013 for 450k, Pidsley et al. 2016 for EPIC). The column **must** be named `TargetID`. |
+
+**Optional** — sensible defaults; tune as needed:
+
+| Parameter | Default | What it is | Picking a value |
+|---|---|---|---|
+| `FUN` | `NULL` | Your analysis closure `function(gds, res)`, run on the open GDS. | Omit to just build the QC'd GDS. See [Run a full analysis](#run-a-full-analysis-supply-a-closure) / [Just build a GDS](#just-build-a-gds-no-closure). |
+| `sampleDetPThreshold` | `0.01` | Sample QC: drop a sample whose **mean** detection p-value is at or above this. | See [Detection p-value QC thresholds](#detection-p-value-qc-thresholds). |
+| `probeDetPThreshold` | `0.01` | Probe QC: drop a probe that fails detection in **any** surviving sample. | See [Detection p-value QC thresholds](#detection-p-value-qc-thresholds). |
+| `readerWorkers` | `1L` | How many IDATs are read in parallel. | See [Choosing the worker count](#choosing-the-worker-count). |
+| `BPPARAM` | `NULL` | An explicit BiocParallel backend, overriding `readerWorkers`. | Only for non-fork backends (Windows / clusters). See [Choosing the worker count](#choosing-the-worker-count). |
+| `compress` | `""` | gdsfmt codec for the matrix nodes (`""` = uncompressed). | See [Speed vs. disk size](#speed-vs-disk-size-the-compress-knob). |
+| `forceRebuild` | `FALSE` | Ignore any cached GDS and rebuild from IDATs. | See [The build cache](#the-build-cache-and-forcerebuild). |
+| `verbose` | `0L` | Logging level: `0L` silent, `1L` phase + per-sample lines, `2L` adds a size + memory snapshot around every external-data load. | Use `2L` when a run seems to hang — it shows *which* load is slow before it blocks. Legacy `TRUE`/`FALSE` is accepted. |
+
+### Detection p-value QC thresholds
+
+minfi assigns every (probe, sample) a **detection p-value** — the chance the
+measured signal is indistinguishable from the array's background (negative-control)
+probes. A *small* p is a confident measurement; a *large* p is a failed one.
+fastMethyl uses these for two independent filters, both on the same 0–1 scale and
+both defaulting to `0.01` (the common literature default). Each must be a single
+number strictly between 0 and 1.
+
+**`sampleDetPThreshold` — drops whole samples.** A sample is removed when the
+**mean** of its detection p-values across all probes is at or above the threshold.
+This catches *globally* failed arrays (poor bisulfite conversion, too little input
+DNA, scan failure), not the odd bad probe.
+
+- A healthy array's mean detection p is tiny (often ≈1e-3 or smaller), so the
+  `0.01` default removes only clearly broken samples and rarely fires on good data.
+- Lower it (e.g. `0.005`) to be stricter; raise it (`0.05` is sometimes used) to
+  be more permissive. Because it is a *mean*, a sample with a handful of failed
+  probes still passes — culling those is the probe filter's job.
+
+**`probeDetPThreshold` — drops probes cohort-wide.** A probe is removed when it
+fails detection (its detection p is at or above the threshold) in **at least one**
+surviving sample. This is the strictest per-probe policy: every retained probe is
+reliably measured in *every* sample.
+
+- Because a single bad sample can knock out a probe for the whole cohort, the
+  number of probes dropped grows with cohort size and heterogeneity — on large or
+  noisy cohorts it can be substantial.
+- If you want a softer rule (drop a probe only when it fails in some *fraction* of
+  samples), do it yourself in `FUN`: set `probeDetPThreshold` close to `1` (e.g.
+  `0.999999`) to effectively disable the built-in all-or-nothing filter, then apply
+  your own per-probe mask to the GDS. The built-in rule has no fraction knob.
+
+### The build cache and `forceRebuild`
+
+To avoid re-reading IDATs you have already processed, `analyze()` caches its work.
+Alongside `<datasetClass>.gds` it writes a small **build-key sidecar** recording
+the inputs that determine the GDS's *content*: the annotation package, both
+detection-p thresholds, and content hashes of the samplesheet and the
+cross-reactive CSV. On a later run with the same `datasetClass`:
+
+- **Key matches** ⇒ the existing GDS is reused silently.
+- **Key differs** (you changed a threshold, the annotation package, the
+  samplesheet, or the probe list) ⇒ it is rebuilt automatically.
+- **No sidecar** (an older or hand-built GDS) ⇒ it is reused with a warning that
+  the configuration cannot be verified.
+
+Set **`forceRebuild = TRUE`** to skip all of that and rebuild unconditionally —
+use it if you suspect a stale or partially-written file, or changed an input the
+key does not track (e.g. the IDAT bytes themselves). `compress` is deliberately
+*not* part of the key: it changes only how the data is stored, not its values, so
+switching codecs alone does not trigger a rebuild.
+
 ### Choosing the worker count
 
 `readerWorkers` sets how many IDATs are read in parallel (it defaults to `1L` —
