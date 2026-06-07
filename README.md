@@ -11,8 +11,7 @@ methylation cohorts. It does **not** reimplement them — it imports them and
 adds a single, fast, memory-lean entry point: **`analyze()`**.
 
 > **Based on the work of Marisol Herrera-Rivero.** The methylation-preprocessing
-> approach this package implements and accelerates is from her work; **please
-> cite the paper** if you use fastMethyl:
+> approach this package implements and accelerates is from her work:
 >
 > Herrera-Rivero, M., Nauck, M., Berger, K., & Baune, B. T. (2025). Immune DNA
 > methylation in depression: cross-sectional and longitudinal study. *BJPsych
