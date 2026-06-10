@@ -120,6 +120,33 @@ test_that("the built-in dasen hook caches: skips unless rebuildDownstream", {
   expect_true(all(done >= 0 & done <= 1))
 })
 
+test_that("gdsDasen with a parallel BPPARAM is value-identical to serial", {
+  skip_if_not_installed("gdsfmt")
+  path <- tempfile(fileext = ".gds")
+  .makeIntensityGds(path, nSample = 8L)
+  on.exit(unlink(path), add = TRUE)
+
+  gdsDasen(path, node = "nb_serial")                       # default: serial
+  gdsDasen(path, node = "nb_par",
+           BPPARAM = BiocParallel::MulticoreParam(2))      # opt-in parallel
+
+  g <- gdsfmt::openfn.gds(path, readonly = TRUE)
+  on.exit(gdsfmt::closefn.gds(g), add = TRUE)
+  ser <- gdsfmt::read.gdsn(gdsfmt::index.gdsn(g, "nb_serial"))
+  par <- gdsfmt::read.gdsn(gdsfmt::index.gdsn(g, "nb_par"))
+  # The parallel reference is summed per worker then combined, so the result is
+  # value-identical to the serial path up to floating-point reassociation.
+  expect_equal(par, ser, tolerance = 1e-10)
+})
+
+test_that("gdsDasen rejects a non-BiocParallelParam BPPARAM", {
+  skip_if_not_installed("gdsfmt")
+  path <- tempfile(fileext = ".gds")
+  .makeIntensityGds(path)
+  on.exit(unlink(path), add = TRUE)
+  expect_error(gdsDasen(path, BPPARAM = "nope"), "BiocParallelParam")
+})
+
 test_that("gdsDasen validates arguments and required nodes", {
   skip_if_not_installed("gdsfmt")
   path <- tempfile(fileext = ".gds")

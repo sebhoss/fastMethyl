@@ -18,7 +18,8 @@
   reference, forms \eqn{beta = M / (M + U + fudge)}, and appends.
 }
 \usage{
-gdsDasen(gds, node = "normbetas", keep = NULL, fudge = 100, block = 64L)
+gdsDasen(gds, node = "normbetas", keep = NULL, fudge = 100, block = 64L,
+         BPPARAM = NULL)
 }
 \arguments{
   \item{gds}{The open read-write GDS handle that \code{\link{analyze}}'s analysis
@@ -35,6 +36,13 @@ gdsDasen(gds, node = "normbetas", keep = NULL, fudge = 100, block = 64L)
     \code{dasen} default, 100).}
   \item{block}{Column-block size that bounds peak memory: larger reads fewer
     times, smaller holds less at once.}
+  \item{BPPARAM}{Optional, opt-in parallel backend. The default (\code{NULL} ->
+    \code{SerialParam}) runs serial and lean. Pass a BiocParallel backend (e.g.
+    \code{MulticoreParam(4)}) to fan the per-column compute (the ~90% that is
+    dye-offset densities + the rank/map) across workers -- value-identical to
+    serial up to floating-point reassociation, roughly twice as fast, at higher
+    but block-bound (not cohort-bound) peak memory. It is opt-in precisely so the
+    default keeps the streaming memory guarantee.}
 }
 \value{
   Invisibly, \code{node}. Called for its side effect: the normalised node is

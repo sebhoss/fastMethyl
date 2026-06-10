@@ -369,6 +369,44 @@ even on cohorts where the in-RAM `dasen` would not fit. It writes `normbetas` fo
 **every** sample (the GDS stays rectangular); a flagged-but-kept outlier just gets
 a column normalised against an outlier-free reference.
 
+#### Parallel normalisation (opt-in `BPPARAM`)
+
+`dasen` is the heaviest analysis phase, and it's ~90% per-column compute (the
+dye-offset densities and the rank-mapping), so it parallelises well. `gdsDasen()`
+takes an opt-in **`BPPARAM`**: the default (serial) is lean — the master holds one
+block at a time and forks nothing; pass a BiocParallel backend to fan the
+per-column work across workers for roughly **2× speed**. The result is
+**value-identical** either way (the reference is summed per worker, then combined,
+so it matches the serial result to floating-point precision).
+
+It's opt-in — not the default — for one reason: forking workers raises peak memory
+(copy-on-write), so you trade RAM for speed. The cost is **block-bound, not
+cohort-bound** (it tracks the fixed column-block, not N), so it stays within a sane
+envelope at any cohort size, but it is real (~2–3× the serial peak). The lean
+serial default keeps fastMethyl's memory guarantee intact; reach for the parallel
+path when CPU, not RAM, is your constraint. (Measured at 450k, N=200, 4 workers:
+normalisation **~180 s → ~95 s**, peak **~2.5 GiB → ~5.8 GiB**.)
+
+The `"dasen"` string runs serial. To parallelise, pass `gdsDasen()` yourself from a
+**custom normalisation hook**:
+
+```r
+library(BiocParallel)
+
+analyze(
+  ...,
+  outlierRemoval = "outlyx",
+  normalization  = function(gds, res, keep) {       # parallel dasen, ~2x faster
+    gdsDasen(gds, node = "normbetas", keep = keep,
+             BPPARAM = MulticoreParam(4))
+  },
+  analysis = function(gds, res) prcomp(gds, node.name = "normbetas", method = "quick"))
+```
+
+`gdsDasen()` is also callable standalone (on the open handle your `analysis`
+receives, or on a GDS path) — handy if you build the GDS with `analyze(FUN = NULL)`
+and normalise it separately.
+
 **Your function is `function(gds, res)`** — it receives two arguments:
 
 - **`gds`** — the **open GDS handle** (a gdsfmt `gds.class` object), opened
@@ -548,9 +586,40 @@ name a stage to force a redo whose inputs the key doesn't track.
 
 `analyze()` exposes the resolved decision to your `analysis` as
 **`res$rebuildDownstream`** (`TRUE` if anything upstream was rebuilt) — use it to
-gate your own cached steps (e.g. cell-count estimation), as `pipeline.R` does. The
-built-in `normalization = "dasen"` hook already honours it: it skips when a
-`normbetas` node exists and nothing upstream changed.
+gate your own cached steps. The pattern: recompute when the input is fresh,
+otherwise load the saved result. For example, cache a PCA and only redo it when
+`normbetas` actually changed:
+
+```r
+res <- analyze(
+  dataDirectory       = "/path/to/idats",
+  samplesheet         = "/path/to/samplesheet.csv",
+  crossReactiveProbes = "/path/to/cross-reactive.csv",
+  gdsOutput           = "/path/to/my_study.gds",
+  annotationPackage   = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+  outlierRemoval = "outlyx",
+  normalization  = "dasen",          # writes/refreshes normbetas (or reuses it)
+  analysis = function(gds, res) {
+    pcaCache <- "my_study_pca.rds"
+    if (res$rebuildDownstream || !file.exists(pcaCache)) {
+      message("Computing PCA")        # normbetas is fresh -> (re)compute
+      pca <- prcomp(gds, node.name = "normbetas", method = "quick")
+      saveRDS(pca, pcaCache)          # cache it for next time
+    } else {
+      message("Reusing cached PCA")   # nothing upstream changed -> reuse
+      pca <- readRDS(pcaCache)
+    }
+    plot(pca)                         # plot either way
+    invisible(pca)
+  })
+```
+
+On the first run (or after `rebuild = "normalize"`, or any build-cache miss)
+`res$rebuildDownstream` is `TRUE`, so the PCA is computed and saved; a plain re-run
+that touched nothing upstream leaves it `FALSE`, so the saved PCA is read back and
+plotted without recomputing. The built-in `normalization = "dasen"` hook honours
+the same flag: it skips when a `normbetas` node exists and nothing upstream
+changed. (`pipeline.R` uses this exact pattern to cache its cell-count estimates.)
 
 `compress` is deliberately *not* part of the build key: it changes only how the
 data is stored, not its values, so switching codecs alone does not trigger a

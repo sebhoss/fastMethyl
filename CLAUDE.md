@@ -45,8 +45,18 @@ normaliser the `"dasen"` hook uses: a two-pass quantile normalisation that
 reproduces `wateRmelon::dasen` **bit-for-bit** (pinned by `test-unit-normalize.R`)
 while reading the GDS one column block at a time — **no full matrix, no scratch
 GDS, bounded/flat peak memory** (see Performance). It depends only on
-stats+gdsfmt, so it adds no package dependency. `keep` selects the reference
-samples; `normbetas` is written for all.
+stats+gdsfmt+BiocParallel, so it adds no package dependency. `keep` selects the
+reference samples; `normbetas` is written for all. It takes an **opt-in
+`BPPARAM`** (default `NULL`→`SerialParam`, lean): the per-column compute fans over
+workers via `bplapply` over `.colChunks` (master reads each block, workers reach
+it by COW), value-identical to serial (the reference is summed per worker then
+combined). Parallel is opt-in, not default, because the fork's COW raises peak
+memory ~2–3× (block-bound, not cohort-bound) for ~2× speed — the lean serial
+default protects the memory guarantee. The built-in `"dasen"` string stays serial;
+parallel is reached via a custom `normalization` function calling
+`gdsDasen(..., BPPARAM=)`. (Profiled in `dev/benchmark_gdsdasen_profile.R`: gdsDasen
+is 89–95% compute-bound, `qmap` 62%; parallel measured in
+`dev/benchmark_pargdsdasen.R`.)
 
 The read-side **adapters** `gdsBetaMatrix()` and `gdsSummarizedExperiment()`
 (`R/adapters.R`) project a finished GDS into the container a non-GDS-aware
@@ -277,9 +287,11 @@ The harness is `dev/benchmark_analysis.R` (preprocessing: IDAT → QC'd GDS,
 fastMethyl vs upstream minfi), `dev/benchmark_pca.R` (analysis-phase PCA routes on
 a normalised GDS), `dev/benchmark_pipeline.R` (per-phase breakdown of
 `pipeline.R`'s `FUN`: build / outlyx / dasen / prcomp / estimateCellCounts.gds),
-`dev/benchmark_streamdasen.R` (streaming `gdsDasen` vs bigmelon `dasen.gds`), and
+`dev/benchmark_streamdasen.R` (streaming `gdsDasen` vs bigmelon `dasen.gds`),
 `dev/benchmark_fullpipeline.R` (end-to-end upstream minfi+bigmelon vs fastMethyl,
-both ways), all run **only** via `dev/run-benchmark.sh` (a `systemd-run --user
+both ways), `dev/benchmark_gdsdasen_profile.R` (gdsDasen per-operation compute-vs-IO
+split), and `dev/benchmark_pargdsdasen.R` (parallel vs serial gdsDasen +
+equivalence), all run **only** via `dev/run-benchmark.sh` (a `systemd-run --user
 --scope` envelope — no resource caps belong in `.ilo.rc`); select the script with
 `BENCH_SCRIPT=dev/benchmark_pca.R dev/run-benchmark.sh`. Figures are 450k, the
 fixed ~14/17 GiB envelope, N = 50/100/200. **Run a timing benchmark with NOTHING

@@ -49,6 +49,17 @@
                 ties = list("ordered", mean))$y
 }
 
+# Split seq_len(n) into up to k contiguous chunks of near-equal size (>= 1 each),
+# the per-worker work units. Avoids a parallel/base dependency for the split.
+.colChunks <- function(n, k) {
+  if (n <= 0L) {
+    return(list())
+  }
+  k <- max(1L, min(as.integer(k), n))
+  starts <- floor(seq(0, n, length.out = k + 1L))
+  lapply(seq_len(k), function(i) (starts[[i]] + 1L):starts[[i + 1L]])
+}
+
 # Exported -----------------------------------------------------------------
 
 # Stream dasen normalisation into `node`, reproducing wateRmelon::dasen bit-for-
@@ -57,8 +68,20 @@
 # selecting which build the quantile reference (default: all); normbetas is
 # always written for every sample. `block` is the column-block size that bounds
 # peak memory -- larger reads fewer times, smaller holds less at once.
+#
+# `BPPARAM` is the OPT-IN parallel backend. The default (NULL -> SerialParam)
+# runs serial and lean -- the master holds one block at a time and nothing is
+# forked. Pass a BiocParallel backend (e.g. MulticoreParam(4)) to fan the
+# per-column compute (the cost is ~90% per-column: dfs2 densities + the rank/map)
+# across workers: the master still does all GDS IO and forks workers that reach
+# the in-master block via copy-on-write, so it is value-identical either way
+# (the parallel reference is summed per worker then combined; differences are at
+# floating-point precision). It trades ~2x speed for higher -- but block-bound,
+# not cohort-bound -- peak memory (the COW of the forked workers), so it is opt-in
+# rather than the default: the lean serial path keeps fastMethyl's memory
+# guarantee, and parallelism is there when RAM is not the constraint.
 gdsDasen <- function(gds, node = "normbetas", keep = NULL, fudge = 100,
-                     block = 64L) {
+                     block = 64L, BPPARAM = NULL) {
   stopifnot(
     "`node` must be a single non-empty string" =
       is.character(node) && length(node) == 1L && !is.na(node) && nzchar(node),
@@ -68,6 +91,13 @@ gdsDasen <- function(gds, node = "normbetas", keep = NULL, fudge = 100,
       is.numeric(block) && length(block) == 1L && !is.na(block) && block >= 1L
   )
   block <- as.integer(block)
+  if (is.null(BPPARAM)) {
+    BPPARAM <- SerialParam()
+  } else if (!methods::is(BPPARAM, "BiocParallelParam")) {
+    stop("`BPPARAM` must be a BiocParallelParam object (e.g. ",
+         "BiocParallel::MulticoreParam()), or NULL for the serial default.",
+         call. = FALSE)
+  }
   handle <- .gdsHandle(gds, readonly = FALSE)
   on.exit(handle$close(), add = TRUE)
   g <- handle$gds
@@ -106,10 +136,13 @@ gdsDasen <- function(gds, node = "normbetas", keep = NULL, fudge = 100,
   )
   keep[is.na(keep)] <- FALSE
 
-  refMI <- numeric(sum(isI))
-  refUI <- numeric(sum(isI))
-  refMII <- numeric(sum(isII))
-  refUII <- numeric(sum(isII))
+  nI <- sum(isI)
+  nII <- sum(isII)
+  nworkers <- max(1L, bpnworkers(BPPARAM))
+  refMI <- numeric(nI)
+  refUI <- numeric(nI)
+  refMII <- numeric(nII)
+  refUII <- numeric(nII)
   offM <- numeric(nsamp)
   offU <- numeric(nsamp)
 
@@ -122,26 +155,48 @@ gdsDasen <- function(gds, node = "normbetas", keep = NULL, fudge = 100,
   blocks <- split(allCols, ceiling(allCols / block))
 
   # Pass 1: dfsfit every column (cache its offset), accumulate the references
-  # over the `keep` samples only.
+  # over the `keep` samples only. The master reads each block; the per-column
+  # work is fanned over BPPARAM workers (each handles a contiguous column chunk,
+  # reaching the block via copy-on-write under a forking backend) and returns its
+  # offsets plus partial reference sums, which the master reduces. With the
+  # default SerialParam this is one in-process chunk == the plain serial loop.
   for (cols in blocks) {
     mblk <- readBlock(meth, cols)
     ublk <- readBlock(unmeth, cols)
-    for (k in seq_along(cols)) {
-      j <- cols[[k]]
-      oM <- .dfs2offset(mblk[, k], isI, isII)
-      oU <- .dfs2offset(ublk[, k], isI, isII)
-      offM[j] <- oM
-      offU[j] <- oU
-      if (keep[j]) {
-        mc <- mblk[, k]
-        mc[isI] <- mc[isI] - oM
-        uc <- ublk[, k]
-        uc[isI] <- uc[isI] - oU
-        refMI <- refMI + sort(mc[isI])
-        refUI <- refUI + sort(uc[isI])
-        refMII <- refMII + sort(mc[isII])
-        refUII <- refUII + sort(uc[isII])
+    parts <- bplapply(.colChunks(length(cols), nworkers), function(idx) {
+      oM <- numeric(length(idx))
+      oU <- numeric(length(idx))
+      pMI <- numeric(nI)
+      pUI <- numeric(nI)
+      pMII <- numeric(nII)
+      pUII <- numeric(nII)
+      for (kk in seq_along(idx)) {
+        k <- idx[[kk]]
+        aM <- .dfs2offset(mblk[, k], isI, isII)
+        aU <- .dfs2offset(ublk[, k], isI, isII)
+        oM[kk] <- aM
+        oU[kk] <- aU
+        if (keep[cols[[k]]]) {
+          mc <- mblk[, k]
+          mc[isI] <- mc[isI] - aM
+          uc <- ublk[, k]
+          uc[isI] <- uc[isI] - aU
+          pMI <- pMI + sort(mc[isI])
+          pUI <- pUI + sort(uc[isI])
+          pMII <- pMII + sort(mc[isII])
+          pUII <- pUII + sort(uc[isII])
+        }
       }
+      list(idx = idx, oM = oM, oU = oU,
+           pMI = pMI, pUI = pUI, pMII = pMII, pUII = pUII)
+    }, BPPARAM = BPPARAM)
+    for (p in parts) {
+      offM[cols[p$idx]] <- p$oM
+      offU[cols[p$idx]] <- p$oU
+      refMI <- refMI + p$pMI
+      refUI <- refUI + p$pUI
+      refMII <- refMII + p$pMII
+      refUII <- refUII + p$pUII
     }
   }
   nk <- sum(keep)
@@ -156,22 +211,33 @@ gdsDasen <- function(gds, node = "normbetas", keep = NULL, fudge = 100,
   out <- gdsfmt::add.gdsn(g, node, valdim = c(nprobe, 0L), storage = "double")
 
   # Pass 2: dfsfit from the cached offset, map ranks onto the reference, form
-  # beta, append. Written for EVERY sample so normbetas stays rectangular.
+  # beta. Workers compute their column chunk's betas; the master appends each
+  # block in order. Written for EVERY sample so normbetas stays rectangular.
   for (cols in blocks) {
     mblk <- readBlock(meth, cols)
     ublk <- readBlock(unmeth, cols)
-    betas <- matrix(0, nrow = nprobe, ncol = length(cols))
-    for (k in seq_along(cols)) {
-      j <- cols[[k]]
-      mc <- mblk[, k]
-      mc[isI] <- mc[isI] - offM[j]
-      uc <- ublk[, k]
-      uc[isI] <- uc[isI] - offU[j]
-      mc[isI] <- .qmapToRef(mc[isI], refMI)
-      mc[isII] <- .qmapToRef(mc[isII], refMII)
-      uc[isI] <- .qmapToRef(uc[isI], refUI)
-      uc[isII] <- .qmapToRef(uc[isII], refUII)
-      betas[, k] <- mc / (mc + uc + fudge)
+    parts <- bplapply(.colChunks(length(cols), nworkers), function(idx) {
+      bc <- matrix(0, nrow = nprobe, ncol = length(idx))
+      for (kk in seq_along(idx)) {
+        k <- idx[[kk]]
+        j <- cols[[k]]
+        mc <- mblk[, k]
+        mc[isI] <- mc[isI] - offM[j]
+        uc <- ublk[, k]
+        uc[isI] <- uc[isI] - offU[j]
+        mc[isI] <- .qmapToRef(mc[isI], refMI)
+        mc[isII] <- .qmapToRef(mc[isII], refMII)
+        uc[isI] <- .qmapToRef(uc[isI], refUI)
+        uc[isII] <- .qmapToRef(uc[isII], refUII)
+        bc[, kk] <- mc / (mc + uc + fudge)
+      }
+      list(idx = idx, betas = bc)
+    }, BPPARAM = BPPARAM)
+    if (length(parts) == 1L) {
+      betas <- parts[[1L]]$betas
+    } else {
+      betas <- matrix(0, nrow = nprobe, ncol = length(cols))
+      for (p in parts) betas[, p$idx] <- p$betas
     }
     gdsfmt::append.gdsn(out, betas)
   }
