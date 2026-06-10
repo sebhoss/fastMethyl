@@ -4,9 +4,15 @@
 # pipeline.R --- example Illumina methylation analysis pipeline.
 #
 # Single-file driver: the CONFIG block at the top declares every
-# per-study setting; the PIPELINE block below runs pre-processing
-# (config in, QC'd GDS out, via fastMethyl) and the analysis on the
-# resulting GDS (via bigmelon).
+# per-study setting; the PIPELINE block below runs one analyze() call
+# that orchestrates the whole analysis in the statistically correct
+# order:
+#
+#     build  ->  outlierRemoval  ->  normalization(keep)  ->  analysis
+#
+# analyze() guarantees that order (outliers are detected on the raw
+# betas and excluded from the normalisation reference) and closes the
+# GDS afterwards, on normal return AND on error.
 #
 # Retrieve a writable copy of this template with:
 #   file.copy(system.file("scripts", "pipeline.R", package = "fastMethyl"),
@@ -28,26 +34,25 @@ suppressPackageStartupMessages({
 # === CONFIG (edit me) ===============================================
 # ====================================================================
 
-# --- Pre-processing inputs (consumed by runPreprocess) -----------
+# --- Pre-processing inputs (consumed by the build phase) ------------
 #
-# Directory containing IDAT files + the samplesheet CSV. The
-# samplesheet must be named `samplesheet_<targetPattern>.csv` and
-# must contain a `Basename` column with one row per sample (the slide
-# subdirectory in the Basename is preserved).
+# Directory the IDAT files live under. The samplesheet's `Basename` entries are
+# resolved relative to this directory (the slide subdirectory in a Basename is
+# preserved).
 dataDirectory         <- "/path/to/idat-directory"
 
-# Path to the cross-reactive / non-specific probes CSV. Must have a
-# column named `TargetID` listing CpG names. Common source: Chen et
-# al. 2013 (PMID 23314698) for 450k, McCartney et al. 2016 for EPIC.
-nonSpecificProbesPath <- "/path/to/non-specific-probes.csv"
+# Path to the samplesheet CSV. One row per sample, with a `Basename` column whose
+# entries resolve to IDAT basenames under dataDirectory. May live anywhere.
+samplesheet           <- "/path/to/samplesheet.csv"
 
-# Component of the samplesheet filename: targetPattern = "batch1"
-# expects samplesheet_batch1.csv under dataDirectory.
-targetPattern         <- "batch1"
+# Path to the cross-reactive (non-specific) probes CSV. Must have a column named
+# `TargetID` listing CpG names. Common source: Chen et al. 2013 (PMID 23314698)
+# for 450k, McCartney et al. 2016 for EPIC.
+crossReactiveProbes   <- "/path/to/cross-reactive-probes.csv"
 
 # Prefix for every output file the pipeline writes (GDS, txt, plots).
 # Pick something cohort-specific so multiple analyses do not collide.
-datasetClass          <- "my_study"
+datasetName           <- "my_study"
 
 # Directory every output (GDS, txt, plots) is written to. Defaults to the
 # current working directory, so a bare `Rscript pipeline.r` keeps writing
@@ -68,10 +73,18 @@ annotationPackage     <- "IlluminaHumanMethylationEPICanno.ilm10b4.hg19"
 sampleDetPThreshold   <- 0.01
 probeDetPThreshold    <- 0.01
 
-# Cache toggle: when FALSE and a GDS at <datasetClass>.gds already
-# exists, runPreprocess skips the read pass and reuses it. Flip to
-# TRUE to force a rebuild (e.g. after changing IDAT sources / QC).
-forceRebuild          <- FALSE
+# Staged rebuild control. The pipeline is a linear chain
+# (build -> normalize -> cell counts), so naming a stage rebuilds it AND every
+# stage after it; anything before it is reused from cache. Values:
+#   "none"        reuse every cached stage (the default)
+#   "normalize"   reuse the built GDS, redo normalisation + cell counts
+#                 (e.g. after changing outlyxPerc / the outlier rule)
+#   "build"/"all" redo everything from the IDAT read down
+# A logical is also accepted (FALSE = "none", TRUE = "all"). A build-cache MISS
+# (changed IDATs / QC thresholds / annotation) rebuilds the GDS regardless and
+# cascades downstream automatically, so you only name a stage to force a redo
+# whose *inputs* did not change.
+rebuild               <- "none"
 
 # IDAT-reader worker count = the full available CPU budget. When a cgroup CPU
 # quota is in force (an HPC scheduler, a container, or a systemd CPUQuota=),
@@ -117,22 +130,22 @@ forceRebuild          <- FALSE
 readerWorkers         <- .cgroupCpuBudget()
 
 # --- Analysis settings (used by the PIPELINE block below) -----------
+
+# Outlier detection. When TRUE, bigmelon::outlyx() flags multivariate outliers on
+# the RAW betas and they are excluded from dasen's quantile reference (the
+# outlierRemoval hook below). They are still written to normbetas -- analyze()
+# normalises every sample, just against an outlier-free reference -- and reported
+# to outliers_<class>.txt / mv_outliers_<class>.txt so you can drop them yourself
+# downstream. Flip to FALSE to skip outlier detection entirely.
+detectOutliers         <- TRUE
+
 # bigmelon::outlyx() percentile for outlier detection.
 outlyxPerc             <- 0.01
 
-# When TRUE, samples outlyx flags as outliers are removed before
-# normalisation: a smaller, outlier-free <datasetClass>_clean.gds is built and
-# used for dasen / PCA / cell counts. The reasons to enable this are
-# statistical (outliers should not skew dasen's quantile reference) and memory
-# (fewer columns into the EPIC cell-count step, the most OOM-prone part) -- it
-# is NOT a speed optimisation (detecting + subsetting roughly offsets the
-# few-percent saved downstream). Default FALSE: outliers are reported but kept,
-# leaving the removal decision to you.
-dropOutliers          <- FALSE
-
-# Cache toggle for dasen: skip normalisation if `normbetas` already
-# exists in the GDS. Flip to TRUE to redo.
-forceRenorm            <- FALSE
+# (Normalisation and cell-type caching are driven by `rebuild` above: the
+# normalize hook and the cell-count step below skip their work when nothing
+# upstream changed -- res$rebuildDownstream -- and their output already exists.
+# Set rebuild = "normalize" to force a re-run of both.)
 
 # Passed straight through to bigmelon::estimateCellCounts.gds().
 gdsPlatform            <- "EPIC"
@@ -141,35 +154,27 @@ cellTypes              <- c("CD8T", "CD4T", "NK", "Bcell", "Mono", "Gran")
 referencePlatform      <- "IlluminaHumanMethylationEPIC"
 estimateCellCountsPerc <- 1
 
-# Cache toggle for cell-type estimation: when FALSE and the
-# cellTypes_<datasetClass>.txt output already exists, the (slow)
-# estimateCellCounts.gds step is skipped and the existing estimates reused.
-# Flip to TRUE to recompute (e.g. after changing the reference settings).
-forceCellCounts        <- FALSE
-
 # ====================================================================
 # === PIPELINE (do not edit unless you are changing the pipeline) ====
 # ====================================================================
 
 # Phase 0: fail fast on the analysis-phase settings BEFORE the expensive
-# pre-processing pass. runPreprocess validates its own inputs, but a
+# pre-processing pass. The build phase validates its own inputs, but a
 # typo in referencePlatform or an uninstalled reference-data package would
 # otherwise surface only at estimateCellCounts.gds -- after the read + QC +
 # GDS write have already burned (potentially) hours. Checking them here
 # turns that into a sub-second failure.
 stopifnot(
+    "`rebuild` must be \"none\"/\"normalize\"/\"build\"/\"all\" or a logical" =
+        (is.character(rebuild) && length(rebuild) == 1L &&
+             rebuild %in% c("none", "normalize", "build", "all")) ||
+        (is.logical(rebuild) && length(rebuild) == 1L && !is.na(rebuild)),
+    "`detectOutliers` must be a single TRUE or FALSE" =
+        is.logical(detectOutliers) && length(detectOutliers) == 1L &&
+        !is.na(detectOutliers),
     "`outlyxPerc` must be a single number in (0, 1]" =
         is.numeric(outlyxPerc) && length(outlyxPerc) == 1L &&
         !is.na(outlyxPerc) && outlyxPerc > 0 && outlyxPerc <= 1,
-    "`forceRenorm` must be a single TRUE or FALSE" =
-        is.logical(forceRenorm) && length(forceRenorm) == 1L &&
-        !is.na(forceRenorm),
-    "`dropOutliers` must be a single TRUE or FALSE" =
-        is.logical(dropOutliers) && length(dropOutliers) == 1L &&
-        !is.na(dropOutliers),
-    "`forceCellCounts` must be a single TRUE or FALSE" =
-        is.logical(forceCellCounts) && length(forceCellCounts) == 1L &&
-        !is.na(forceCellCounts),
     "`gdsPlatform` must be one of \"450k\", \"EPIC\"" =
         is.character(gdsPlatform) && length(gdsPlatform) == 1L &&
         gdsPlatform %in% c("450k", "EPIC"),
@@ -209,7 +214,7 @@ arrayFamily <- if (grepl("EPICv2", annotationPackage)) {
 # EPIC, so an EPIC v2 cohort cannot run the cell-composition step in this
 # pipeline; say so up front instead of failing inside estimateCellCounts.gds.
 if (arrayFamily == "EPICv2") {
-    stop("annotationPackage is an EPIC v2 annotation, but the analysis phase (bigmelon::estimateCellCounts.gds) supports only \"450k\" and \"EPIC\" reference data.\n  Use analyze(..., FUN = NULL) to just build the EPIC v2 GDS, then supply your own cell-composition step.",
+    stop("annotationPackage is an EPIC v2 annotation, but the analysis phase (bigmelon::estimateCellCounts.gds) supports only \"450k\" and \"EPIC\" reference data.\n  Use analyze(..., analysis = NULL, normalization = \"dasen\") to build a normalised EPIC v2 GDS, then supply your own cell-composition step.",
         call. = FALSE)
 }
 if (gdsPlatform != arrayFamily) {
@@ -243,132 +248,90 @@ if (!requireNamespace(.referencePkg, quietly = TRUE)) {
 # All outputs (GDS, txt, plots) are written under outputDir. Resolving every
 # path through this one helper keeps a run self-contained in one directory
 # regardless of where Rscript was launched from -- including the GDS cache,
-# which runPreprocess keys on the path it is handed.
+# which the build phase keys on the path it is handed.
 if (!dir.exists(outputDir)) {
     dir.create(outputDir, recursive = TRUE)
 }
 outPath <- function(name) file.path(outputDir, name)
 
-# Phases 1 + 2 in a single analyze() call. analyze() runs the validated
-# pre-processing (config in, QC'd LZ4_RA-compressed GDS out), opens the GDS, and
-# hands the open handle to FUN below for the analysis -- guaranteeing the GDS is
-# closed afterwards, on normal return AND on error, via on.exit(). A failed run
-# therefore never leaves the file locked open. analyze() does no normalisation
-# of its own: FUN below runs outlier detection on the raw betas first, then its
-# own cache-aware, atomic dasen -- the statistically correct order.
-analyze(
-    dataDirectory         = dataDirectory,
-    nonSpecificProbesPath = nonSpecificProbesPath,
-    targetPattern         = targetPattern,
-    datasetClass          = outPath(datasetClass),
-    annotationPackage     = annotationPackage,
-    sampleDetPThreshold   = sampleDetPThreshold,
-    probeDetPThreshold    = probeDetPThreshold,
-    forceRebuild          = forceRebuild,
-    readerWorkers         = readerWorkers,
-    FUN = function(gds, res) {
-
-        # Outlier detection on the RAW betas, before normalisation: detecting
-        # outliers on un-normalised data flags samples whose technical
-        # artefacts are still visible; dasen() may otherwise mask them.
+# Outlier-detection hook: run on the RAW betas (before normalisation), write the
+# outlier reports, and return the keep mask analyze() feeds to the normalisation
+# step so dasen's quantile reference excludes the flagged samples. Returning the
+# mask -- rather than rebuilding a smaller GDS -- is all that is needed: analyze()
+# still normalises every sample, just against an outlier-free reference, so the
+# GDS stays whole. Set detectOutliers = FALSE to skip with "none".
+outlierRemoval <- if (detectOutliers) {
+    function(gds, res) {
         message("Detecting outliers")
         outliers <- outlyx(gds, plot = FALSE, perc = outlyxPerc)
         write.table(outliers[which(outliers$outliers), ],
-                    file = outPath(paste0("outliers_", datasetClass, ".txt")),
+                    file = outPath(paste0("outliers_", datasetName, ".txt")),
                     quote = FALSE, row.names = FALSE, col.names = TRUE,
                     sep = "\t")
         write.table(outliers[which(outliers$mv), ],
-                    file = outPath(paste0("mv_outliers_", datasetClass, ".txt")),
+                    file = outPath(paste0("mv_outliers_", datasetName, ".txt")),
                     quote = FALSE, row.names = FALSE, col.names = TRUE,
                     sep = "\t")
+        !outliers$outliers
+    }
+} else {
+    "none"
+}
 
-        # Optionally drop the flagged outliers before normalisation by building
-        # an outlier-free <datasetClass>_clean.gds and working on it. analyze()
-        # owns the GDS it opened (`gds`); FUN owns the clean GDS it opens here,
-        # so it registers its own on.exit() to close it. Columns are read with
-        # readex.gdsn(sel = ...) so dropped samples are never materialised; the
-        # clean GDS is cached (rebuilt only on forceRebuild) so the normbetas /
-        # cell-count results it carries survive across re-runs.
-        workGds <- gds
-        if (dropOutliers) {
-            flagged <- rownames(outliers)[which(outliers$outliers)]
-            cleanPath <- outPath(paste0(datasetClass, "_clean.gds"))
-            if (length(flagged) > 0L &&
-                  (forceRebuild || !file.exists(cleanPath))) {
-                message(sprintf("Dropping %d outlier sample(s) into %s",
-                                length(flagged), basename(cleanPath)))
-                keep <- !(as.character(
-                    read.gdsn(index.gdsn(gds, "pData"))$barcode) %in% flagged)
-                if (file.exists(cleanPath)) unlink(cleanPath)
-                cleanGds <- createfn.gds(cleanPath)
-                for (nd in c("betas", "methylated", "unmethylated", "pvals")) {
-                    if (nd %in% ls.gdsn(gds)) {
-                        add.gdsn(cleanGds, nd,
-                                 val = readex.gdsn(index.gdsn(gds, nd),
-                                                   sel = list(NULL, keep)),
-                                 compress = "LZ4_RA", closezip = TRUE)
-                    }
-                }
-                add.gdsn(cleanGds, "fData",
-                         val = read.gdsn(index.gdsn(gds, "fData")),
-                         check = FALSE)
-                pd <- read.gdsn(index.gdsn(gds, "pData"))
-                add.gdsn(cleanGds, "pData", val = pd[keep, , drop = FALSE])
-                for (nd in c("history", "paths")) {
-                    if (nd %in% ls.gdsn(gds)) {
-                        add.gdsn(cleanGds, nd,
-                                 val = read.gdsn(index.gdsn(gds, nd)))
-                    }
-                }
-                closefn.gds(cleanGds)
-            }
-            if (file.exists(cleanPath)) {
-                workGds <- openfn.gds(cleanPath, readonly = FALSE)
-                on.exit(closefn.gds(workGds), add = TRUE)
-            }
-        }
+# Normalisation hook: cache-aware streaming dasen. gdsDasen() reproduces
+# wateRmelon::dasen exactly while reading the GDS one column block at a time, so
+# peak memory stays bounded on large cohorts -- and it honours the `keep` mask
+# from the outlier step (reference from survivors, normbetas for every sample).
+# Recompute only when something upstream changed (res$rebuildDownstream -- a
+# rebuild request or a build-cache miss) or no normbetas node exists yet.
+normalization <- function(gds, res, keep) {
+    if (res$rebuildDownstream || !("normbetas" %in% ls.gdsn(gds))) {
+        message("Normalizing (streaming dasen)")
+        gdsDasen(gds, node = "normbetas", keep = keep)
+    } else {
+        message("Reusing existing normbetas node (set rebuild = \"normalize\" to redo)")
+    }
+}
 
-        # Cache-aware, atomic normalisation: dasen writes a scratch node that is
-        # promoted to `normbetas` only on success, so a crash cannot leave a
-        # half-written node to be reused. A leftover scratch node from a prior
-        # crash is discarded unconditionally first.
-        scratch <- "normbetas_building"
-        if (scratch %in% ls.gdsn(workGds)) {
-            delete.gdsn(index.gdsn(workGds, scratch))
-        }
-        if (forceRenorm || !("normbetas" %in% ls.gdsn(workGds))) {
-            message("Normalizing")
-            add.gdsn(workGds, scratch)
-            dasen(workGds, node = scratch)
-            if ("normbetas" %in% ls.gdsn(workGds)) {
-                delete.gdsn(index.gdsn(workGds, "normbetas"))
-            }
-            rename.gdsn(index.gdsn(workGds, scratch), "normbetas")
-        } else {
-            message("Reusing existing normbetas node (set forceRenorm = TRUE to redo)")
-        }
+# One analyze() call runs build -> outlierRemoval -> normalization -> analysis, then
+# closes the GDS (on normal return AND on error). The analysis function receives
+# the open, QC'd, outlier-aware-normalised GDS and computes PCA + cell composition.
+analyze(
+    dataDirectory         = dataDirectory,
+    crossReactiveProbes   = crossReactiveProbes,
+    samplesheet           = samplesheet,
+    gdsOutput             = outPath(paste0(datasetName, ".gds")),
+    annotationPackage     = annotationPackage,
+    sampleDetPThreshold   = sampleDetPThreshold,
+    probeDetPThreshold    = probeDetPThreshold,
+    rebuild               = rebuild,
+    readerWorkers         = readerWorkers,
+    outlierRemoval        = outlierRemoval,
+    normalization         = normalization,
+    analysis = function(gds, res) {
 
         # PCA on normalised betas (method = "quick"; "sorted" is much slower).
         # The PCA device is closed via on.exit so a plot() error cannot leave a
         # truncated PDF / dangling device behind (on.exit fires here because
         # FUN is a function).
         message("Performing Principal Components Analysis")
-        pca <- prcomp(workGds, node.name = "normbetas", method = "quick")
+        pca <- prcomp(gds, node.name = "normbetas", method = "quick")
         message("Plotting Principal Components")
-        pdf(outPath(paste0("pca_", datasetClass, ".pdf")))
+        pdf(outPath(paste0("pca_", datasetName, ".pdf")))
         pca_device <- dev.cur()
         on.exit(if (pca_device %in% dev.list()) dev.off(pca_device), add = TRUE)
         plot(pca)
         dev.off(pca_device)
 
-        # Cell-type proportions: the slowest, most memory-hungry step, so its
-        # output is cached -- skipped when cellTypes_<class>.txt exists unless
-        # forceCellCounts = TRUE.
-        cellsPath <- outPath(paste0("cellTypes_", datasetClass, ".txt"))
-        if (forceCellCounts || !file.exists(cellsPath)) {
+        # Cell-type proportions: the slowest, most memory-hungry step, and the
+        # last stage in the chain, so its output is cached -- recomputed only when
+        # something upstream changed (res$rebuildDownstream, e.g. a fresh GDS or
+        # re-normalisation) or the cellTypes_<class>.txt output does not exist yet.
+        cellsPath <- outPath(paste0("cellTypes_", datasetName, ".txt"))
+        if (res$rebuildDownstream || !file.exists(cellsPath)) {
             message("Estimating cell type proportions")
             cells <- estimateCellCounts.gds(
-                workGds,
+                gds,
                 gdPlatform        = gdsPlatform,
                 bn                = "normbetas",
                 perc              = estimateCellCountsPerc,
@@ -378,7 +341,7 @@ analyze(
             write.table(cells, file = cellsPath, quote = FALSE,
                         row.names = FALSE, col.names = TRUE, sep = "\t")
         } else {
-            message("Reusing existing cell-type estimates (set forceCellCounts = TRUE to recompute)")
+            message("Reusing existing cell-type estimates (set rebuild = \"normalize\" to recompute)")
         }
 
         invisible(res)

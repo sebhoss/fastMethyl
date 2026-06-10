@@ -30,20 +30,20 @@ test_that("runPreprocess rejects a BPPARAM that is not a BiocParallelParam", {
     # errors before any IDAT/minfi work begins.
     expect_error(
         runPreprocess(
-            dataDirectory         = data_dir,
-            nonSpecificProbesPath = xreact_path,
-            targetPattern         = "real",
-            datasetClass          = "pp_test",
-            annotationPackage     = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
-            forceRebuild          = TRUE,
-            BPPARAM               = "not-a-param",
-            .check_annotation     = function(pkg) TRUE),
+            dataDirectory       = data_dir,
+            crossReactiveProbes = xreact_path,
+            samplesheet         = file.path(data_dir, "samplesheet_real.csv"),
+            gdsOutput           = "pp_test.gds",
+            annotationPackage   = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
+            forceRebuild        = TRUE,
+            BPPARAM             = "not-a-param",
+            .check_annotation   = function(pkg) TRUE),
         regexp = "BPPARAM.*BiocParallelParam")
 })
 
 # ---- cache-reuse path (no IDAT read) ---------------------------------
 #
-# These build an on-disk fixture plus a real GDS at the datasetClass path,
+# These build an on-disk fixture plus a real GDS at the gdsOutput path,
 # so runPreprocess takes the .inspectExistingGDS cache-hit branch and
 # never reaches processMethArrayExp. gdsfmt is namespace-qualified inside
 # the helper, so only an install (not an attach, not minfi) is needed.
@@ -67,7 +67,8 @@ test_that("runPreprocess rejects a BPPARAM that is not a BiocParallelParam", {
     write.csv(data.frame(TargetID = "cg00000029", stringsAsFactors = FALSE),
               xreact, row.names = FALSE)
     list(root = root, data_dir = data_dir, xreact = xreact,
-         datasetClass = file.path(root, "cohort"),
+         sheet = file.path(data_dir, "samplesheet_real.csv"),
+         gdsOutput = file.path(root, "cohort.gds"),
          gdsPath = file.path(root, "cohort.gds"))
 }
 
@@ -91,7 +92,7 @@ test_that("runPreprocess rejects a BPPARAM that is not a BiocParallelParam", {
                                      probeDetPThreshold = 0.01) {
     key <- .currentBuildKey(
         annotationPackage, sampleDetPThreshold, probeDetPThreshold,
-        file.path(fx$data_dir, "samplesheet_real.csv"), fx$xreact)
+        fx$sheet, fx$xreact)
     saveRDS(key, .buildKeyPath(fx$gdsPath))
     invisible(key)
 }
@@ -109,9 +110,9 @@ test_that("runPreprocess reuses a valid existing GDS instead of rebuilding", {
     expect_message(
         res <- runPreprocess(
             dataDirectory         = fx$data_dir,
-            nonSpecificProbesPath = fx$xreact,
-            targetPattern         = "real",
-            datasetClass          = fx$datasetClass,
+            crossReactiveProbes   = fx$xreact,
+            samplesheet           = fx$sheet,
+            gdsOutput             = fx$gdsOutput,
             annotationPackage     = "AnnoPkg",
             .check_annotation     = function(pkg) TRUE),
         "Reusing existing GDS")
@@ -132,9 +133,9 @@ test_that("runPreprocess warns but reuses a GDS that has no build-key sidecar", 
     expect_warning(
         res <- suppressMessages(runPreprocess(
             dataDirectory         = fx$data_dir,
-            nonSpecificProbesPath = fx$xreact,
-            targetPattern         = "real",
-            datasetClass          = fx$datasetClass,
+            crossReactiveProbes   = fx$xreact,
+            samplesheet           = fx$sheet,
+            gdsOutput             = fx$gdsOutput,
             annotationPackage     = "AnnoPkg",
             .check_annotation     = function(pkg) TRUE)),
         regexp = "no build-key sidecar")
@@ -156,9 +157,9 @@ test_that("runPreprocess rebuilds when the build key no longer matches", {
         expect_error(
             runPreprocess(
                 dataDirectory         = fx$data_dir,
-                nonSpecificProbesPath = fx$xreact,
-                targetPattern         = "real",
-                datasetClass          = fx$datasetClass,
+                crossReactiveProbes   = fx$xreact,
+                samplesheet           = fx$sheet,
+                gdsOutput             = fx$gdsOutput,
                 annotationPackage     = "AnnoPkg",
                 sampleDetPThreshold   = 0.01,
                 .check_annotation     = function(pkg) TRUE),
@@ -176,9 +177,9 @@ test_that("runPreprocess warns that a supplied BPPARAM ignores readerWorkers", {
     expect_warning(
         runPreprocess(
             dataDirectory         = fx$data_dir,
-            nonSpecificProbesPath = fx$xreact,
-            targetPattern         = "real",
-            datasetClass          = fx$datasetClass,
+            crossReactiveProbes   = fx$xreact,
+            samplesheet           = fx$sheet,
+            gdsOutput             = fx$gdsOutput,
             annotationPackage     = "AnnoPkg",
             readerWorkers         = 2L,
             BPPARAM               = BiocParallel::SerialParam(),
@@ -197,9 +198,9 @@ test_that("runPreprocess warns when the cached GDS has samples absent from the s
     expect_warning(
         suppressMessages(runPreprocess(
             dataDirectory         = fx$data_dir,
-            nonSpecificProbesPath = fx$xreact,
-            targetPattern         = "real",
-            datasetClass          = fx$datasetClass,
+            crossReactiveProbes   = fx$xreact,
+            samplesheet           = fx$sheet,
+            gdsOutput             = fx$gdsOutput,
             annotationPackage     = "AnnoPkg",
             .check_annotation     = function(pkg) TRUE)),
         regexp = "not present in the current")
@@ -217,9 +218,9 @@ test_that("runPreprocess rebuilds when an existing GDS is unreadable", {
     expect_error(
         suppressMessages(runPreprocess(
             dataDirectory         = fx$data_dir,
-            nonSpecificProbesPath = fx$xreact,
-            targetPattern         = "real",
-            datasetClass          = fx$datasetClass,
+            crossReactiveProbes   = fx$xreact,
+            samplesheet           = fx$sheet,
+            gdsOutput             = fx$gdsOutput,
             annotationPackage     = "AnnoPkg",
             .check_annotation     = function(pkg) TRUE)),
         regexp = "annotation package not installed")

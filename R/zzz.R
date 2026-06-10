@@ -5,9 +5,9 @@
   v <- utils::packageVersion("fastMethyl")
   msg <- c(
     sprintf("fastMethyl %s", v),
-    "  analyze(): one call -- preprocess (config -> QC'd, bigmelon-compatible",
-    "    GDS) -> your analysis function on the open GDS -> closed for you.",
-    "    Omit FUN to just build the GDS; normalise/outlier-detect inside FUN.",
+    "  analyze(): one call -- build a QC'd, bigmelon-compatible GDS, then run",
+    "    outlierRemoval -> normalization -> your analysis, GDS closed for you.",
+    "    Hooks take a method name (\"outlyx\"/\"dasen\"), a function, or \"none\".",
     "    See system.file('scripts', 'pipeline.R', package = 'fastMethyl')",
     "    for a worked example.",
     "  Built on minfi + bigmelon."

@@ -78,5 +78,6 @@ test_that("analyze is the exported public entry point with the documented signat
 
     fmls <- names(formals(analyze))
     expect_true("..." %in% fmls)
-    expect_true(all(c("FUN", ".preprocess", ".open", ".close") %in% fmls))
+    expect_true(all(c("analysis", "outlierRemoval", "normalization",
+                      ".preprocess", ".open", ".close") %in% fmls))
 })

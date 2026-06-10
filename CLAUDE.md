@@ -15,19 +15,51 @@ minfi and bigmelon** for large Illumina methylation cohorts. It does not
 reimplement or vendor either dependency: it imports them and adds faster paths
 for the steps that dominate runtime and memory.
 
-**`analyze()` (`R/analyze.R`) is the sole exported function** (`NAMESPACE` is
-hand-maintained, not roxygen-generated). It is a loan-pattern driver: one call
-runs the preprocessing pipeline, optionally hands the open GDS handle to a
-user-supplied `FUN`, and **guarantees the GDS is closed** on normal return and
-on error (via `on.exit`, not the closure). `FUN` is optional —
-`analyze(..., FUN = NULL)` just builds the QC'd GDS and returns its path +
-metadata, subsuming the old `runPreprocess()` public role. It is deliberately
-unopinionated about the analysis: **normalisation (dasen) and outlier detection
-(outlyx) both live in `FUN`**, where the caller controls their order (correct
-order: outlyx on raw betas first, then dasen). `analyze()` itself does no
-normalisation. The heavy operations are dependency-injected
-(`.preprocess`/`.open`/`.close`) so the control flow is unit-testable without
-IDATs/minfi/gdsfmt/bigmelon.
+**`analyze()` (`R/analyze.R`) is the primary exported function** (`NAMESPACE` is
+hand-maintained, not roxygen-generated). It is a loan-pattern **orchestrator**:
+one call runs the preprocessing pipeline, then drives the analysis phases **in a
+fixed, statistically correct order** and **guarantees the GDS is closed** on
+normal return and on error (via `on.exit`, not the closure). The order is:
+
+    build  →  outlierRemoval  →  normalize(keep)  →  FUN
+
+`outlierRemoval` and `normalize` are **uniform hooks**: each takes a built-in
+method name (`"outlyx"` / `"dasen"`), a user function, or `"none"` (the default).
+`outlierRemoval(gds, res)` returns a logical **keep mask** over the GDS samples;
+`normalize(gds, res, keep)` writes a normalised node. Built-in `"dasen"` is
+`gdsDasen(gds, keep = keep)` — the reference is built from the survivors but
+`normbetas` is written for **every** sample, so the GDS stays rectangular and a
+flagged-but-kept outlier still gets a column. The keep mask is exposed to `FUN`
+as `res$outlierKeep`. **The ordering is the point** — analyze() enforces
+outliers-before-normalisation (dasen's between-array quantile reference must
+exclude outliers) so a caller cannot get it wrong. Both hooks default to `"none"`,
+so an `analyze()` call with neither set is unopinionated and equivalent to a plain
+build + `FUN` (the legacy "do outlyx/dasen inside `FUN`" pattern still works).
+`analyze(..., FUN = NULL)` with both hooks `"none"` just builds the QC'd GDS and
+returns its path + metadata, subsuming the old `runPreprocess()` public role. The
+heavy operations are dependency-injected (`.preprocess`/`.open`/`.close`) so the
+orchestration is unit-testable without IDATs/minfi/gdsfmt/bigmelon.
+
+`gdsDasen()` (`R/streaming-normalize.R`) is the streaming between-array
+normaliser the `"dasen"` hook uses: a two-pass quantile normalisation that
+reproduces `wateRmelon::dasen` **bit-for-bit** (pinned by `test-unit-normalize.R`)
+while reading the GDS one column block at a time — **no full matrix, no scratch
+GDS, bounded/flat peak memory** (see Performance). It depends only on
+stats+gdsfmt, so it adds no package dependency. `keep` selects the reference
+samples; `normbetas` is written for all.
+
+The read-side **adapters** `gdsBetaMatrix()` and `gdsSummarizedExperiment()`
+(`R/adapters.R`) project a finished GDS into the container a non-GDS-aware
+downstream package wants — a dense `individuals × variables` matrix for
+FactoMineR / `stats::prcomp` / irlba / umap, or a `SummarizedExperiment` with
+rowData/colData from fData/pData for limma / sva. They accept the open handle
+`FUN` receives or a GDS path (opened read-only, closed on return). The GDS stays
+the canonical low-memory store; an adapter materialises a representation **on
+demand, sized to the caller** — so it is an explicit call, not an `analyze()`
+output mode (that would reintroduce whole-matrix assembly). GDS-native analysis
+(bigmelon `outlyx`/`prcomp`/`estimateCellCounts.gds`) needs no adapter, and
+bigmelon's `prcomp(node.name=, method="quick")` is the fastest PCA route here
+(see Performance).
 
 Everything `analyze()` composes is **internal** (defined in `R/`, reached from
 tests via `fastMethyl:::` or the bare-name bindings in `helper-internals.R`):
@@ -43,12 +75,20 @@ tests via `fastMethyl:::` or the bare-name bindings in `helper-internals.R`):
   **without ever assembling a full cohort-sized matrix in RAM**.
   `processMethArrayExp()` is the experiment-level wrapper.
 - `runPreprocess()` (`R/pipeline-preprocess.R`) — the validated config-in /
-  QC'd-GDS-out step `analyze()`'s default `.preprocess` calls. `.validateArgs()`
-  checks every input up front (types, ranges, file existence, annotation-package
-  availability, samplesheet structure, IDAT presence, cross-reactive CSV
-  structure) before any IDAT byte is read, and a build-key sidecar caches
-  results so re-runs that change thresholds/inputs rebuild instead of silently
-  reusing a stale GDS.
+  QC'd-GDS-out step `analyze()`'s default `.preprocess` calls. Its user-facing
+  inputs are **paths**: `dataDirectory` (IDAT root), `samplesheet` (the CSV path
+  itself — *not* a `samplesheet_<x>.csv` convention), `crossReactiveProbes` (the
+  drop-list CSV), `gdsOutput` (the literal output `.gds` path, used verbatim),
+  and `annotationPackage`. `analyze()` resolves **deprecated aliases** (with a
+  warning) for the old names: `targetPattern`→`samplesheet` (reconstructing the
+  old `dataDirectory/samplesheet_<pattern>.csv` path), `datasetClass`→`gdsOutput`
+  (appending `.gds`), `nonSpecificProbesPath`→`crossReactiveProbes`, `FUN`→
+  `analysis`, `normalize`→`normalization`, `forceRebuild`→`rebuild`.
+  `.validateArgs()` checks every input up front (types, ranges, file existence,
+  annotation-package availability, samplesheet structure, IDAT presence,
+  cross-reactive CSV structure) before any IDAT byte is read, and a build-key
+  sidecar caches results so re-runs that change thresholds/inputs rebuild instead
+  of silently reusing a stale GDS.
 
 Supporting internals: `R/minfi-internals.R` (small pure minfi helpers
 reproduced so the package needs only minfi's public API), `R/parallel-helpers.R`
@@ -170,9 +210,12 @@ paren-aligned hanging indent; the linter is picky about the exact column.
   for a 1000-sample EPIC cohort. `append.gdsn` extends a node along the sample
   (column) dimension and works on a still-in-write-mode compressed node; once a
   node hits readmode it cannot be modified, which is why probe-row drops need the
-  compaction rewrite rather than an in-place edit. The `layout = "methylset"`
-  branch has no GDS to stream into and still assembles matrices — streaming is the
-  `gds` path only. Do not reintroduce whole-matrix assembly.
+  compaction rewrite rather than an in-place edit. The streaming write is the
+  **only** path: `processMethArray` always streams into a GDS — there is no
+  in-memory / MethylSet output mode, and the read-side `gdsBetaMatrix()` /
+  `gdsSummarizedExperiment()` adapters are how an in-memory representation is
+  obtained, sized to the caller, *after* the GDS exists. Do not reintroduce
+  whole-matrix assembly on the write side.
 - **QC interacts with streaming asymmetrically.** Sample QC
   (`sample_detP_threshold`) is per-column and decided as each sample streams
   past (dropped samples are simply not appended). Probe QC
@@ -208,15 +251,61 @@ paren-aligned hanging indent; the linter is picky about the exact column.
   package + thresholds + samplesheet + cross-reactive CSV next to the GDS; a
   matching key reuses the GDS silently, a missing one reuses with a warning, a
   mismatched one rebuilds. A failed/partial GDS write is unlinked so it is never
-  mistaken for a valid cache.
+  mistaken for a valid cache. `runPreprocess` returns `res$rebuilt` (TRUE when it
+  actually (re)wrote the GDS, i.e. a forced build OR a cache miss/mismatch).
+- **Staged `rebuild`.** The pipeline is a linear chain
+  (`build → normalize → FUN's outputs`), so `analyze()`'s `rebuild` arg names a
+  stage and rebuilds it **and every stage after it**; earlier stages are reused.
+  `.resolveRebuild()` (`R/analyze.R`) maps `"none"`/`"build"`/`"normalize"`/`"all"`
+  (or a logical: `FALSE`→none, `TRUE`→all) to per-stage booleans for the two
+  analyze-owned stages. The build stage is realised through `runPreprocess`'s
+  `forceRebuild` boolean (analyze translates `rebuild` → `forceRebuild` in `...`
+  and drops `rebuild`); the normalize stage is enforced via
+  **`res$rebuildDownstream`** = `rebuild names normalize` OR `res$rebuilt` — so a
+  build-cache miss cascades downstream automatically. The cache-aware built-in
+  `"dasen"` hook skips when a `normbetas` node exists and `!res$rebuildDownstream`;
+  `FUN` reads `res$rebuildDownstream` to gate its own cached steps (cell counts in
+  `pipeline.R`). `forceRebuild` is a **deprecated logical alias** (warns) for
+  back-compat; `runPreprocess`/`.validateArgs` keep `forceRebuild` as their
+  internal formal (the build mechanism), not deprecated.
 
 ## Performance: what moves the needle, and the dead ends
 
 Recorded so the same experiments are not repeated; this is the operative record
 (distilled from `dev/` scratch design docs that have since been folded in here).
-The harness is `dev/benchmark_analysis.R`, run **only** via `dev/run-benchmark.sh`
-(a `systemd-run --user --scope` envelope — no resource caps belong in `.ilo.rc`).
-Figures are 450k, the fixed ~14/17 GiB envelope, N = 50/100/200.
+The harness is `dev/benchmark_analysis.R` (preprocessing: IDAT → QC'd GDS,
+fastMethyl vs upstream minfi), `dev/benchmark_pca.R` (analysis-phase PCA routes on
+a normalised GDS), `dev/benchmark_pipeline.R` (per-phase breakdown of
+`pipeline.R`'s `FUN`: build / outlyx / dasen / prcomp / estimateCellCounts.gds),
+`dev/benchmark_streamdasen.R` (streaming `gdsDasen` vs bigmelon `dasen.gds`), and
+`dev/benchmark_fullpipeline.R` (end-to-end upstream minfi+bigmelon vs fastMethyl,
+both ways), all run **only** via `dev/run-benchmark.sh` (a `systemd-run --user
+--scope` envelope — no resource caps belong in `.ilo.rc`); select the script with
+`BENCH_SCRIPT=dev/benchmark_pca.R dev/run-benchmark.sh`. Figures are 450k, the
+fixed ~14/17 GiB envelope, N = 50/100/200. **Run a timing benchmark with NOTHING
+else touching the box** — concurrent installs/tests/lint starve the throttled GDS
+writes and inflate timings (a contaminated run logged a N=50 upstream build at
+1851 s vs 185 s clean); the benchmarks now print each cohort live (a `-> N=...`
+line via stderr) so a long sweep shows progress.
+
+- **Full-pipeline apples-to-apples (`dev/benchmark_fullpipeline.R`, clean run,
+  450k, N = 50/100/200).** The complete workflow both ecosystems run — upstream
+  `read.metharray.exp`+`preprocessRaw`+QC+`es2gds` then
+  `outlyx`/`dasen`/`prcomp`/`estimateCellCounts.gds`, vs `analyze(FUN=NULL)` then
+  the same analysis with `gdsDasen`. The **analysis phase is identical code both
+  sides except dasen**, so it dilutes the win; the difference is the build + the
+  streaming dasen. Total time **307.5/573.1/1135.9 s upstream vs
+  156.7/218.0/347.4 s fastMethyl** = **1.96×/2.63×/3.27×** (growing). The
+  **build** alone (the part fastMethyl reimplements) is **6–9×**
+  (185→30, 396→44, 819→99 s); the analysis is a wash-to-slight-win
+  (gdsDasen edges dasen.gds at N=200: 249 vs 317 s). **Memory is the headline:**
+  upstream peak **3.9/7.5/12.5 GiB** (climbs — holds the full matrices), fastMethyl
+  **3.2/3.0/4.0 GiB** (bounded). fastMethyl's *build* peak is near-nothing
+  (110 MiB at N=50, 3.5 GiB at N=200), so its full-pipeline peak is set by the
+  **shared `estimateCellCounts` reference load**, not by anything fastMethyl does
+  — which is why it stays ~4 GiB while upstream grows unbounded (a N=1000+ cohort
+  OOMs upstream but stays feasible on fastMethyl). ~3.1× less memory at N=200,
+  widening.
 
 - **GDS compression is the single biggest runtime cost — which is why `compress`
   defaults to `""` (uncompressed).** Opt-in `LZ4_RA` is **~2× slower** (44.7/76.4/
@@ -253,9 +342,72 @@ Figures are 450k, the fixed ~14/17 GiB envelope, N = 50/100/200.
   - *Sex-probe address cache* — a no-op (the lookup is already negligible).
   - *Unconditional `gc()` per block* — now `if (forking) gc(FALSE)`; for
     `MulticoreParam` effectively a no-op, kept only to bound the non-forking path.
-  - *Parallel `dasen`* — serial quantile barrier, net-negative prototype. The one
-    un-pulled lever on the analysis phase is bigmelon's `dasenrank` (subsamples the
-    reference — an approximation, so opt-in only, with an equivalence check).
+  - *Parallel `dasen`* — serial quantile barrier, net-negative prototype.
+  - **Streaming `dasen` — prototyped and validated, the right lever (`dev/benchmark_streamdasen.R`).**
+    A two-pass between-array QN that reproduces `wateRmelon::dasen` **bit-exactly**
+    (max diff ~1e-15 = float epsilon, at N = 50/100/200), without holding the full
+    matrix and without `dasenrank`'s `temp.gds`. It works because the QN reference
+    is `rowMeans` of the sorted columns (mean of order statistics) — accumulable in
+    one streaming pass; a second pass dfsfits each column in RAM (cache the dfs2
+    offset from pass 1, do not re-density) and maps ranks onto the reference.
+    Results (450k): time **44.9/77.9/153.6 s** (0.99×/1.38×/1.06× vs bigmelon
+    `dasen`'s 44.3/107.6/162.4 s — competitive-to-faster, no penalty); **peak
+    bounded ~0.8–1.2 GiB and flat in N** vs bigmelon's 2.2→3.4 GiB *growing* (~4.3×
+    less at N=200, gap widens). Because it is exact, the `dasenrank` subsample
+    (`perc<1`) is an *optional* speed knob, never a necessity. **Crucially it must
+    run AFTER outlier removal** (the reference must exclude outliers; it cannot be
+    fused into the build, which runs before outliers are known — only within-sample
+    correction like noob can fuse into the build). Pending promotion into the
+    package as the `analyze(normalize=)` between-array path.
+  - *FactoMineR / irlba PCA instead of bigmelon's GDS-native `prcomp`* — both
+    **lose decisively** (`dev/benchmark_pca.R`, uncompressed, N = 50/100/200,
+    `normbetas`, ncp = 10). bigmelon `prcomp(method = "quick")` runs in
+    **0.2/0.3/0.6 s at ~0–2 MiB peak**; irlba (`prcomp_irlba` over a materialised
+    matrix) is **8.8/13.7/18.4 s at ~1–2 GiB**, `stats::prcomp` worse
+    (17/51/85 s), FactoMineR worst (**27.5/45.2/73.7 s at ~1.8–2.4 GiB**). The
+    structural reason is the data shape: methylation is `p ≫ n`, so the GDS-native
+    route only ever forms the small `n × n` cross-product and reads straight from
+    the node, while every matrix route must first `gdsBetaMatrix()` the whole
+    `samples × probes` matrix into RAM (3.5–7.7 s on its own) before decomposing.
+    The `gdsBetaMatrix()` / `gdsSummarizedExperiment()` adapters exist for tools
+    that genuinely need an in-RAM matrix or a `SummarizedExperiment` (FactoMineR
+    diagnostics, limma, sva), **not** as a faster PCA — `pipeline.R` stays on
+    `prcomp`. Do not swap the PCA route for speed without new evidence.
+
+### Analysis-phase cost breakdown (`pipeline.R`'s `FUN`)
+
+`dev/benchmark_pipeline.R` times each stage of the shipped pipeline separately on
+a real 450k GDS (uncompressed, 4 cores, N = 50/100/200), in run order. Time (s) /
+peak (MiB):
+
+| phase | N=50 | N=100 | N=200 | scaling |
+|---|---|---|---|---|
+| build (`analyze(FUN=NULL)`) | 28.7 / 3313 | 47.6 / 5094 | 80.0 / 6584 | ~linear in N |
+| `outlyx` (raw betas) | 1.0 | 1.4 | 2.1 | negligible, ~flat |
+| **`dasen` → normbetas** | 47.7 / 2642 | 93.7 / 3852 | **176.2 / 4953** | **~linear in N, serial** |
+| `prcomp` quick | 0.2 | 0.3 | 0.7 | free |
+| `estimateCellCounts.gds` | 75.6 / 3976 | 79.7 / 3987 | 89.0 / 4451 | large but ~**fixed** in N |
+
+The actionable conclusions, which **invert with cohort size**:
+
+- **`dasen` is the scaling bottleneck and the single largest phase at scale**
+  (176 s at N=200, > the build itself). It is serial — the between-sample
+  quantile reference is a hard barrier (every sample maps onto the average of all
+  samples' sorted intensities, so no sample's normbetas is final until the last is
+  read; this is why *parallel `dasen`* was net-negative and stays reverted). The
+  only real lever is bigmelon's `dasenrank` (subsampled reference, an
+  approximation → opt-in with an equivalence check). This is the highest-ROI
+  analysis-phase target for the large cohorts fastMethyl exists for.
+- **`estimateCellCounts.gds` is a large but nearly *fixed* cost** (~75–89 s, +18%
+  over a 4× cohort): it is dominated by loading the FlowSorted reference + probe
+  picking, not the per-sample QP projection. So it dwarfs everything at small N
+  but is not a scaling concern; `pipeline.R` already caches it (the
+  `forceCellCounts` gate), which is the right mitigation. Its `perc` knob barely
+  helps because the cost is the fixed part.
+- **`outlyx` (1–2 s) and `prcomp` (<1 s) are noise.** A `detectOutliers` skip is a
+  cleanliness nicety (the default `dropOutliers=FALSE` path computes a report it
+  never uses), not a speed win; fusing outlyx's per-sample stats into the
+  streaming write is **not** worth it for a 2 s phase.
 
 ### Memory / copy-on-write inflation (multi-worker forks)
 

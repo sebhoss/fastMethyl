@@ -29,7 +29,7 @@ adds a single, fast, memory-lean entry point: **`analyze()`**.
 
 ## What it does
 
-`analyze()` is the one public function. A single call:
+`analyze()` is the main public function. A single call:
 
 1. **validates** every input, then builds a QC'd,
    bigmelon-compatible **GDS** from raw IDATs in a fused, **column-streaming**
@@ -37,13 +37,18 @@ adds a single, fast, memory-lean entry point: **`analyze()`**.
    cohort-sized matrices are never assembled in RAM, so **peak memory grows far
    more slowly than the cohort** — large cohorts that make upstream minfi run out
    of RAM stay feasible (see the benchmark below);
-2. optionally runs **your analysis function** on the open GDS handle; and
-3. **closes the GDS for you** — on normal return *and* on error.
+2. **detects outliers** and **normalises**, via pluggable hooks, in the
+   statistically correct order; then
+3. runs **your analysis function** on the result and **closes the GDS for you** —
+   on normal return *and* on error.
 
-`analyze()` is deliberately unopinionated about the analysis: normalisation
-(`dasen`) and outlier detection (`outlyx`) live in **your** function, so you
-control their order — the statistically correct one being **outliers first,
-then normalise**. Omit the function to just get the QC'd GDS.
+`analyze()` *orchestrates* the analysis phases — **build → outlier removal →
+normalisation → your function** — and **enforces the order**, so outliers are
+excluded from the normalisation reference (the one ordering that's easy to get
+wrong, and statistically important). The `outlierRemoval` and `normalization` steps
+each take a **built-in method name** (`"outlyx"` / `"dasen"`), **your own
+function**, or `"none"` — all default to `"none"`, so a bare call stays
+unopinionated. Omit everything to just get the QC'd GDS.
 
 ## Benchmark
 
@@ -128,6 +133,45 @@ is: at small N both pipelines are annotation-bound and closer (13% less), but th
 gap opens to **45% less at N=200** and keeps widening — exactly the property that
 keeps large EPIC cohorts bounded where upstream OOMs (a real 582-sample EPIC
 cohort ran in ≈14.6 GB; see the Notice above).
+
+### The whole pipeline, end to end
+
+The table above isolates the **preprocessing** step (IDAT → QC'd GDS), which is
+where fastMethyl actually differs. But you run a *whole* pipeline — outlier
+detection, normalisation, PCA, cell composition — so here is the complete
+workflow both ways: upstream (`read.metharray.exp` + `preprocessRaw` + QC +
+`es2gds`, then `outlyx` / `dasen` / `prcomp` / `estimateCellCounts.gds`) vs
+fastMethyl (`analyze()`'s streaming build + `gdsDasen`, same analysis). 450k, the
+same fixed envelope.
+
+| Samples | Upstream total | fastMethyl total | Speedup | of which build (up → fm) | Upstream peak | fastMethyl peak |
+|--------:|---------------:|-----------------:|:-------:|:------------------------:|--------------:|----------------:|
+|      50 |     307.5 s    |      156.7 s     | **2.0×** | 184.8 → 29.6 s (6.2×)    | 3.9 GiB       | 3.2 GiB         |
+|     100 |     573.1 s    |      218.0 s     | **2.6×** | 396.1 → 43.5 s (9.1×)    | 7.5 GiB       | 3.0 GiB         |
+|     200 |    1135.9 s    |      347.4 s     | **3.3×** | 818.7 → 98.7 s (8.3×)    | 12.5 GiB      | 4.0 GiB         |
+
+The full-pipeline speedup (**2–3.3×**) is *smaller* than the preprocessing speedup
+above — and that's the honest framing. The analysis half (`outlyx`, `prcomp`,
+`estimateCellCounts.gds`) is the **same bigmelon code** whichever reader built the
+GDS, so it adds the same time to both columns and dilutes the win; the only
+analysis difference is fastMethyl's streaming `gdsDasen`, which edges bigmelon's
+`dasen.gds` at N=200 (249 s vs 317 s). The lead lives in the **build — 6–9×**.
+
+**Memory is again the structural story.** Upstream's peak climbs with the cohort
+(**3.9 → 12.5 GiB** — it holds the full matrices during the read); fastMethyl
+stays **bounded at ~3–4 GiB**. fastMethyl's *build* peak is near-nothing (110 MiB
+at N=50), so its full-pipeline peak is set by the **shared** cell-composition
+reference load, **not** by anything fastMethyl does — which is why it flattens
+while upstream grows without bound. At a 1000-sample cohort that's the difference
+between a run that fits and one that OOMs.
+
+> The fastMethyl peak here (≈3–4 GiB) reads a little *lower* than the
+> preprocessing-only table above (≈4–6.9 GiB) — same operation, separate runs.
+> The difference is run-to-run variance in the build's copy-on-write inflation
+> across forked reader workers (sensitive to GC timing; the isolated
+> preprocessing harness, which forks against a pre-warmed ~2 GiB annotation
+> parent, tends to *overstate* it). Both stay in the few-GiB, bounded regime —
+> the contrast with upstream's growth is the point, not the second decimal.
 
 ### Past where minfi fits: N = 500 to 2000
 
@@ -275,22 +319,68 @@ BiocManager::install("sebhoss/fastMethyl", update = FALSE)
 
 ## Usage
 
-### Run a full analysis (supply a closure)
+### Run a full analysis (the hooks + your closure)
 
-`analyze()` builds the GDS, runs your function on the open handle, and closes
-the GDS even if your code errors.
+`analyze()` builds the GDS, then runs **outlier removal → normalisation → your
+function** on it, and closes the GDS even if your code errors. The two analysis
+hooks share one shape — a built-in method name, your own function, or `"none"`:
+
+```r
+library(fastMethyl)
+library(bigmelon)   # outlyx / prcomp / estimateCellCounts.gds on the open GDS
+
+res <- analyze(
+  dataDirectory       = "/path/to/idats",                  # folder the IDATs live under
+  samplesheet         = "/path/to/samplesheet.csv",        # CSV with a Basename column
+  crossReactiveProbes = "/path/to/cross-reactive.csv",     # CSV with a TargetID column
+  gdsOutput           = "my_study.gds",                    # path to the output GDS
+  annotationPackage   = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+  readerWorkers       = min(parallel::detectCores(), 16L), # parallel reads; cap so containers/huge boxes don't oversubscribe -- see below
+
+  outlierRemoval = "outlyx",   # flag outliers on the RAW betas, exclude them from the reference
+  normalization  = "dasen",    # streaming dasen -> a `normbetas` node (exact, memory-bounded)
+
+  analysis = function(gds, res) {   # your analysis, on the normalised GDS
+    pca <- prcomp(gds, node.name = "normbetas", method = "quick")
+    list(pca = pca, keep = res$outlierKeep)
+  })
+# `res` is whatever `analysis` returned; the GDS is already closed.
+```
+
+`analyze()` runs the steps **in order** and feeds the outlier **keep mask** from
+`outlierRemoval` to `normalization`, so `dasen`'s quantile reference is built from the
+survivors (the mask is also exposed to `analysis` as `res$outlierKeep`). You can't get
+outliers-before-normalisation wrong, because `analyze()` owns the order.
+
+**The hooks** (`outlierRemoval`, `normalization`) each accept:
+
+- a **method name** — `"outlyx"` / `"dasen"` (the fast, known-good defaults), or
+  `"none"` to skip the step (the default for both);
+- **your own function** — `outlierRemoval = function(gds, res)` must return a
+  logical **keep mask** over the samples (`TRUE` = survivor); `normalization =
+  function(gds, res, keep)` writes a normalised node, using `keep` to choose the
+  reference samples. This is how you swap in a different outlier rule or
+  normalisation (e.g. `funnorm`, a custom QC) while keeping the orchestration.
+
+Built-in `normalization = "dasen"` is fastMethyl's own `gdsDasen()` — a streaming
+quantile normalisation that reproduces `wateRmelon::dasen` **bit-for-bit** while
+reading the GDS one block at a time, so peak memory stays **bounded and flat**
+even on cohorts where the in-RAM `dasen` would not fit. It writes `normbetas` for
+**every** sample (the GDS stays rectangular); a flagged-but-kept outlier just gets
+a column normalised against an outlier-free reference.
 
 **Your function is `function(gds, res)`** — it receives two arguments:
 
 - **`gds`** — the **open GDS handle** (a gdsfmt `gds.class` object), opened
-  read-write. This is the bigmelon-compatible GDS, so you operate on it with
-  `bigmelon`/`gdsfmt`: `dasen()`, `outlyx()`, `prcomp()`,
+  read-write. By the time `analysis` runs, the hooks have already added the
+  `normbetas` node (if `normalization` was set). It is the bigmelon-compatible GDS,
+  so you operate on it with `bigmelon`/`gdsfmt`: `prcomp()`,
   `estimateCellCounts.gds()`, `index.gdsn()` / `read.gdsn()`, etc. Its nodes are
   `betas`, `methylated`, `unmethylated`, `pvals` (the raw QC'd data) plus
-  `fData` / `pData` / `history` / `paths`; anything you add (e.g. a `normbetas`
-  node from `dasen`) persists in the file. **Do not return `gds`** — it is
-  closed by the time `analyze()` returns; return materialised results instead
-  (matrices, data.frames, model objects).
+  `fData` / `pData` / `history` / `paths`, plus `normbetas`; anything you add
+  persists in the file. **Do not return `gds`** — it is closed by the time
+  `analyze()` returns; return materialised results instead (matrices,
+  data.frames, model objects).
 - **`res`** — the preprocessing result, a list with:
   - `res$gds_path` — path to the GDS file on disk;
   - `res$targets` — the post-QC samplesheet (a data.frame, one row per
@@ -298,32 +388,18 @@ the GDS even if your code errors.
   - `res$keepSamples` — logical vector marking which input samples passed
     sample-level QC;
   - `res$keepProbes` — logical vector marking which probes passed probe-level
-    QC (or `NULL` when no probe threshold was applied).
+    QC (or `NULL` when no probe threshold was applied);
+  - `res$outlierKeep` — the keep mask from the `outlierRemoval` hook (`NULL` when
+    that hook was `"none"`).
 
-Do the normalisation and outlier detection **inside** your function, in the
-right order — **`outlyx` on the raw betas first, then `dasen`** (dasen can mask
-the technical artefacts `outlyx` keys on, and removing flagged samples first
-keeps them out of dasen's quantile reference):
-
-```r
-library(fastMethyl)
-library(bigmelon)   # dasen / outlyx / prcomp on the open GDS
-
-res <- analyze(
-  dataDirectory         = "/path/to/idats",
-  nonSpecificProbesPath = "/path/to/cross-reactive.csv",  # CSV with a TargetID column
-  targetPattern         = "batch1",   # expects samplesheet_batch1.csv in dataDirectory
-  datasetClass          = "my_study", # output GDS is my_study.gds
-  annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
-  readerWorkers         = min(parallel::detectCores(), 16L),  # parallel reads; cap so containers/huge boxes don't oversubscribe -- see below
-  FUN = function(gds, res) {
-    outliers <- outlyx(gds, plot = FALSE)             # 1. detect on RAW betas
-    dasen(gds, node = "normbetas")                    # 2. then normalise
-    pca <- prcomp(gds, node.name = "normbetas", method = "quick")  # 3. analyse
-    list(outliers = outliers, pca = pca)
-  })
-# `res` is whatever FUN returned; the GDS is already closed.
-```
+**Prefer the hooks over doing outlier removal / normalisation inside `analysis`.**
+Putting them in the hooks lets `analyze()` enforce the order and exclude outliers
+from the normalisation reference for you. You *can* still do everything in `analysis`
+with both hooks left `"none"` — that's the unopinionated mode — but then the
+order is yours to get right (outliers on the raw betas first, then `dasen`,
+because `dasen` can mask the artefacts `outlyx` keys on and outliers skew its
+quantile reference). The shippable
+[`pipeline.R`](inst/scripts/pipeline.R) template wires the hooks up end to end.
 
 Pass `verbose = 2L` to log every step with its on-disk size and a memory
 snapshot — so a slow or stalling load (e.g. materialising the EPIC annotation)
@@ -334,33 +410,74 @@ fastest option and the right one for a working file. If you intend to archive or
 share the GDS, pass `compress = "LZ4_RA"` to shrink it; see
 [Speed vs. disk size](#speed-vs-disk-size-the-compress-knob).
 
+### Feeding other packages — the adapters
+
+GDS-native tools (`bigmelon`'s `dasen`, `outlyx`, `prcomp`,
+`estimateCellCounts.gds`) work on the open `gds` handle directly — no conversion
+needed, and that route never materialises a cohort-sized matrix. For a package
+that **cannot** read a GDS, two adapters project the QC'd data into the container
+it expects:
+
+- **`gdsBetaMatrix(gds, node = "betas", transpose = TRUE)`** → a dense
+  `samples × probes` matrix (the *individuals × variables* orientation
+  `FactoMineR::PCA`, `stats::prcomp`, `irlba`, `umap` and `Rtsne` expect). Pass
+  `transpose = FALSE` for `probes × samples`, or a different `node` (e.g.
+  `"normbetas"`) to read a node you added.
+- **`gdsSummarizedExperiment(gds)`** → a `SummarizedExperiment` whose assays are
+  the matrix nodes, with `rowData` from `fData` and `colData` from `pData` — ready
+  for `limma`, `sva`, and the rest of the `SummarizedExperiment` ecosystem.
+
+Both take the open handle your `analysis` receives *or* a path on disk (a path is
+opened read-only and closed for you), so they work inside `analysis` or standalone on
+`analyze(analysis = NULL)$gds_path`:
+
+```r
+analyze(..., normalization = "dasen",                # writes normbetas before analysis runs
+        analysis = function(gds, res) {
+  X   <- gdsBetaMatrix(gds, node = "normbetas")  # n × p matrix, materialised here
+  pca <- FactoMineR::PCA(X, graph = FALSE)       # graph = FALSE: no auto-plot
+  list(pca = pca)
+})
+```
+
+An adapter materialises the matrix in RAM, so it is **opt-in and sized to your
+cohort** — reach for it when the destination package needs it, and stay on the
+GDS-native route otherwise. (For PCA specifically, the GDS-native
+`prcomp(node.name = "normbetas", method = "quick")` is both the fastest and the
+leanest option for this `p ≫ n` data — a materialise-then-decompose route such as
+`FactoMineR::PCA` or `irlba` reads the whole matrix into RAM first and does not
+win the time back, so `pipeline.R` stays on `prcomp`.)
+
 ### Parameters
 
-`FUN` is `analyze()`'s own argument; **every other argument is forwarded to the
-preprocessing step**, so the full set is below. The ones whose value takes some
-thought link to a dedicated guidance section.
+`analysis`, `outlierRemoval` and `normalization` are `analyze()`'s **own** arguments (the
+orchestration); **every other argument is forwarded to the preprocessing step**,
+so the full set is below. The ones whose value takes some thought link to a
+dedicated guidance section.
 
 **Required** — every run must supply these (they have no default):
 
 | Parameter | What it is | Picking a value |
 |---|---|---|
-| `dataDirectory` | Directory holding the raw `*_Grn.idat` / `*_Red.idat` files **and** the samplesheet. | Point it at the folder your IDATs live in; both `.idat` and `.idat.gz` are accepted. |
-| `targetPattern` | Selects the samplesheet by name — fastMethyl reads `samplesheet_<targetPattern>.csv` from `dataDirectory`. | Name the sheet to match: `targetPattern = "batch1"` ⇒ `samplesheet_batch1.csv`. The sheet needs a `Basename` column whose entries resolve to the IDAT basenames. |
-| `datasetClass` | Names the output — the GDS is written to `<datasetClass>.gds` in the working directory. | Any short cohort identifier; it also names the [build-cache](#the-build-cache-and-forcerebuild) sidecar. |
+| `dataDirectory` | Directory the raw `*_Grn.idat` / `*_Red.idat` files live under. | Point it at the folder your IDATs live in; both `.idat` and `.idat.gz` are accepted. The samplesheet `Basename` entries resolve relative to this. |
+| `samplesheet` | Path to the samplesheet CSV (it may live anywhere). | The sheet needs a `Basename` column whose entries resolve to the IDAT basenames under `dataDirectory`; the slide subdirectory in a `Basename` is preserved. |
+| `gdsOutput` | Path to the output GDS file (written verbatim, e.g. `/data/my_study.gds`). | A full path including the `.gds` name; the [build-cache](#the-build-cache-and-rebuild) sidecar (`<gdsOutput>.buildkey.rds`) is written beside it. |
 | `annotationPackage` | The Illumina annotation package for **your array type** (probe annotation, incl. the sex-chromosome map). | Must match the array **and** be installed. 450k: `IlluminaHumanMethylation450kanno.ilmn12.hg19`; EPIC v1: `IlluminaHumanMethylationEPICanno.ilm10b4.hg19`. A wrong/missing package fails validation before any IDAT is read. |
-| `nonSpecificProbesPath` | CSV of cross-reactive / non-specific probes to drop; must contain a `TargetID` column (one probe ID per row). | Use a published cross-reactive list for your array (e.g. Chen et al. 2013 for 450k, Pidsley et al. 2016 for EPIC). The column **must** be named `TargetID`. |
+| `crossReactiveProbes` | CSV of cross-reactive / non-specific probes to drop; must contain a `TargetID` column (one probe ID per row). | Use a published cross-reactive list for your array (e.g. Chen et al. 2013 for 450k, Pidsley et al. 2016 for EPIC). The column **must** be named `TargetID`. |
 
 **Optional** — sensible defaults; tune as needed:
 
 | Parameter | Default | What it is | Picking a value |
 |---|---|---|---|
-| `FUN` | `NULL` | Your analysis closure `function(gds, res)`, run on the open GDS. | Omit to just build the QC'd GDS. See [Run a full analysis](#run-a-full-analysis-supply-a-closure) / [Just build a GDS](#just-build-a-gds-no-closure). |
+| `analysis` | `NULL` | Your analysis closure `function(gds, res)`, run on the (outlier-aware, normalised) GDS. | Omit to stop after the hooks. See [Run a full analysis](#run-a-full-analysis-the-hooks--your-closure) / [Just build a GDS](#just-build-a-gds-no-closure). |
+| `outlierRemoval` | `"none"` | Outlier step: a method name (`"outlyx"`), your own `function(gds, res)` returning a keep mask, or `"none"`. | `"outlyx"` is the fast default; runs on the raw betas and excludes flagged samples from the normalisation reference. |
+| `normalization` | `"none"` | Normalisation step: a method name (`"dasen"`), your own `function(gds, res, keep)` that writes a node, or `"none"`. | `"dasen"` is the streaming, memory-bounded `gdsDasen()`; writes `normbetas` for every sample using the survivors as the reference. |
 | `sampleDetPThreshold` | `0.01` | Sample QC: drop a sample whose **mean** detection p-value is at or above this. | See [Detection p-value QC thresholds](#detection-p-value-qc-thresholds). |
 | `probeDetPThreshold` | `0.01` | Probe QC: drop a probe that fails detection in **any** surviving sample. | See [Detection p-value QC thresholds](#detection-p-value-qc-thresholds). |
 | `readerWorkers` | `1L` | How many IDATs are read in parallel. | See [Choosing the worker count](#choosing-the-worker-count). |
 | `BPPARAM` | `NULL` | An explicit BiocParallel backend, overriding `readerWorkers`. | Only for non-fork backends (Windows / clusters). See [Choosing the worker count](#choosing-the-worker-count). |
 | `compress` | `""` | gdsfmt codec for the matrix nodes (`""` = uncompressed). | See [Speed vs. disk size](#speed-vs-disk-size-the-compress-knob). |
-| `forceRebuild` | `FALSE` | Ignore any cached GDS and rebuild from IDATs. | See [The build cache](#the-build-cache-and-forcerebuild). |
+| `rebuild` | `"none"` | Which pipeline stage to recompute (it + everything downstream): `"none"`, `"normalize"`, `"build"`/`"all"`, or a logical. | See [The build cache and `rebuild`](#the-build-cache-and-rebuild). |
 | `verbose` | `0L` | Logging level: `0L` silent, `1L` phase + per-sample lines, `2L` adds a size + memory snapshot around every external-data load. | Use `2L` when a run seems to hang — it shows *which* load is slow before it blocks. Legacy `TRUE`/`FALSE` is accepted. |
 
 ### Detection p-value QC thresholds
@@ -392,17 +509,17 @@ reliably measured in *every* sample.
   number of probes dropped grows with cohort size and heterogeneity — on large or
   noisy cohorts it can be substantial.
 - If you want a softer rule (drop a probe only when it fails in some *fraction* of
-  samples), do it yourself in `FUN`: set `probeDetPThreshold` close to `1` (e.g.
+  samples), do it yourself in `analysis`: set `probeDetPThreshold` close to `1` (e.g.
   `0.999999`) to effectively disable the built-in all-or-nothing filter, then apply
   your own per-probe mask to the GDS. The built-in rule has no fraction knob.
 
-### The build cache and `forceRebuild`
+### The build cache and `rebuild`
 
 To avoid re-reading IDATs you have already processed, `analyze()` caches its work.
-Alongside `<datasetClass>.gds` it writes a small **build-key sidecar** recording
+Alongside the `gdsOutput` GDS it writes a small **build-key sidecar** recording
 the inputs that determine the GDS's *content*: the annotation package, both
 detection-p thresholds, and content hashes of the samplesheet and the
-cross-reactive CSV. On a later run with the same `datasetClass`:
+cross-reactive CSV. On a later run with the same `gdsOutput`:
 
 - **Key matches** ⇒ the existing GDS is reused silently.
 - **Key differs** (you changed a threshold, the annotation package, the
@@ -410,11 +527,35 @@ cross-reactive CSV. On a later run with the same `datasetClass`:
 - **No sidecar** (an older or hand-built GDS) ⇒ it is reused with a warning that
   the configuration cannot be verified.
 
-Set **`forceRebuild = TRUE`** to skip all of that and rebuild unconditionally —
-use it if you suspect a stale or partially-written file, or changed an input the
-key does not track (e.g. the IDAT bytes themselves). `compress` is deliberately
-*not* part of the key: it changes only how the data is stored, not its values, so
-switching codecs alone does not trigger a rebuild.
+#### Staged rebuilds
+
+The pipeline is a linear chain — **build → normalize → your analysis** — so the
+`rebuild` argument names *where to start over*: the named stage **and every stage
+after it** are recomputed, everything before is reused.
+
+| `rebuild` | rebuilds | reuses |
+|---|---|---|
+| `"none"` (default) / `FALSE` | nothing | the build, `normbetas`, your cached outputs |
+| `"normalize"` | normalisation + everything downstream | the built GDS |
+| `"build"` / `"all"` / `TRUE` | everything, from the IDAT read down | — |
+
+This replaces a pile of independent toggles with one coherent knob: you can't ask
+to reuse a stage whose input you just rebuilt. The headline case is *"I changed
+`outlyxPerc` — redo from normalisation, don't re-read 200 IDATs"* (`rebuild =
+"normalize"`). A **build-cache miss** (changed thresholds / annotation /
+samplesheet) rebuilds the GDS *and* cascades downstream automatically, so you only
+name a stage to force a redo whose inputs the key doesn't track.
+
+`analyze()` exposes the resolved decision to your `analysis` as
+**`res$rebuildDownstream`** (`TRUE` if anything upstream was rebuilt) — use it to
+gate your own cached steps (e.g. cell-count estimation), as `pipeline.R` does. The
+built-in `normalization = "dasen"` hook already honours it: it skips when a
+`normbetas` node exists and nothing upstream changed.
+
+`compress` is deliberately *not* part of the build key: it changes only how the
+data is stored, not its values, so switching codecs alone does not trigger a
+rebuild. (`forceRebuild` still works as a deprecated logical alias —
+`TRUE → "all"`, `FALSE → "none"` — but emits a warning; prefer `rebuild`.)
 
 ### Choosing the worker count
 
@@ -437,18 +578,20 @@ cluster) supply `BPPARAM = SnowParam(...)` rather than `readerWorkers`.
 
 ### Just build a GDS (no closure)
 
-Omit `FUN` to stop after preprocessing. `analyze()` returns the result list
-(`gds_path`, `targets`, `keepSamples`, `keepProbes`) and closes the GDS, so you
-can open it later and normalise/analyse however you like:
+Omit `analysis` **and** leave both hooks `"none"` (the defaults) to stop after
+preprocessing. `analyze()` returns the result list (`gds_path`, `targets`,
+`keepSamples`, `keepProbes`) and closes the GDS, so you can open it later and
+normalise/analyse however you like. (Setting a hook but no `analysis` is also valid —
+e.g. `normalization = "dasen"` alone builds a *normalised* GDS and returns its path.)
 
 ```r
 res <- analyze(
-  dataDirectory         = "/path/to/idats",
-  nonSpecificProbesPath = "/path/to/cross-reactive.csv",
-  targetPattern         = "batch1",
-  datasetClass          = "my_study",
-  annotationPackage     = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
-  readerWorkers         = min(parallel::detectCores(), 16L))
+  dataDirectory       = "/path/to/idats",
+  samplesheet         = "/path/to/samplesheet.csv",
+  crossReactiveProbes = "/path/to/cross-reactive.csv",
+  gdsOutput           = "my_study.gds",
+  annotationPackage   = "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+  readerWorkers       = min(parallel::detectCores(), 16L))
 res$gds_path             # the QC'd GDS; open it with bigmelon/gdsfmt for any analysis
 ```
 

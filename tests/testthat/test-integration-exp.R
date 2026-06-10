@@ -112,9 +112,9 @@ test_that("runPreprocess rebuilds a GDS from a samplesheet end-to-end", {
 
     res <- runPreprocess(
         dataDirectory         = data_dir,
-        nonSpecificProbesPath = xreact,
-        targetPattern         = "e2e",
-        datasetClass          = file.path(root, "cohort"),
+        crossReactiveProbes   = xreact,
+        samplesheet           = file.path(data_dir, "samplesheet_e2e.csv"),
+        gdsOutput             = file.path(root, "cohort.gds"),
         annotationPackage     = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
         forceRebuild          = TRUE,
         BPPARAM               = BiocParallel::SerialParam(),

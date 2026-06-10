@@ -27,9 +27,9 @@
 # read any IDAT bytes -- it only checks that the files exist on disk.
 .validateArgs <- function(
   dataDirectory,
-  nonSpecificProbesPath,
-  targetPattern,
-  datasetClass,
+  crossReactiveProbes,
+  samplesheet,
+  gdsOutput,
   annotationPackage,
   sampleDetPThreshold,
   probeDetPThreshold,
@@ -42,16 +42,16 @@
     "`dataDirectory` must be a single non-empty string" =
       is.character(dataDirectory) && length(dataDirectory) == 1L &&
       !is.na(dataDirectory) && nzchar(dataDirectory),
-    "`nonSpecificProbesPath` must be a single non-empty string" =
-      is.character(nonSpecificProbesPath) &&
-      length(nonSpecificProbesPath) == 1L &&
-      !is.na(nonSpecificProbesPath) && nzchar(nonSpecificProbesPath),
-    "`targetPattern` must be a single non-empty string" =
-      is.character(targetPattern) && length(targetPattern) == 1L &&
-      !is.na(targetPattern) && nzchar(targetPattern),
-    "`datasetClass` must be a single non-empty string" =
-      is.character(datasetClass) && length(datasetClass) == 1L &&
-      !is.na(datasetClass) && nzchar(datasetClass),
+    "`crossReactiveProbes` must be a single non-empty string" =
+      is.character(crossReactiveProbes) &&
+      length(crossReactiveProbes) == 1L &&
+      !is.na(crossReactiveProbes) && nzchar(crossReactiveProbes),
+    "`samplesheet` must be a single non-empty string" =
+      is.character(samplesheet) && length(samplesheet) == 1L &&
+      !is.na(samplesheet) && nzchar(samplesheet),
+    "`gdsOutput` must be a single non-empty string" =
+      is.character(gdsOutput) && length(gdsOutput) == 1L &&
+      !is.na(gdsOutput) && nzchar(gdsOutput),
     "`annotationPackage` must be a single non-empty string" =
       is.character(annotationPackage) &&
       length(annotationPackage) == 1L &&
@@ -85,25 +85,25 @@
       call. = FALSE
     )
   }
-  if (!file.exists(nonSpecificProbesPath)) {
+  if (!file.exists(crossReactiveProbes)) {
     stop(
       sprintf(
-        "`nonSpecificProbesPath` (\"%s\") does not point to an existing file.",
-        nonSpecificProbesPath
+        "`crossReactiveProbes` (\"%s\") does not point to an existing file.",
+        crossReactiveProbes
       ),
       call. = FALSE
     )
   }
 
-  sheetPath <- paste0(
-    dataDirectory, "/samplesheet_",
-    targetPattern, ".csv"
-  )
+  # `samplesheet` is the path to the CSV itself (one row per sample, with a
+  # `Basename` column). The IDAT files those basenames name are resolved under
+  # `dataDirectory`, so the samplesheet may live anywhere.
+  sheetPath <- samplesheet
   if (!file.exists(sheetPath)) {
     stop(
       sprintf(
-        "`targetPattern` (\"%s\") does not resolve to an existing samplesheet at %s.",
-        targetPattern, sheetPath
+        "`samplesheet` (\"%s\") does not point to an existing file.",
+        sheetPath
       ),
       call. = FALSE
     )
@@ -171,14 +171,14 @@
 
   # --- cross-reactive probes CSV structure --------------------------
   xReactiveProbes <- utils::read.csv(
-    file = nonSpecificProbesPath,
+    file = crossReactiveProbes,
     stringsAsFactors = FALSE
   )
   if (!"TargetID" %in% names(xReactiveProbes)) {
     stop(
       sprintf(
         "CSV at %s is missing the required `TargetID` column.\n  Columns found: %s.",
-        nonSpecificProbesPath,
+        crossReactiveProbes,
         paste(names(xReactiveProbes), collapse = ", ")
       ),
       call. = FALSE
@@ -281,13 +281,13 @@
 
 .currentBuildKey <- function(annotationPackage, sampleDetPThreshold,
                              probeDetPThreshold, sheetPath,
-                             nonSpecificProbesPath) {
+                             crossReactiveProbes) {
   list(
     annotationPackage   = annotationPackage,
     sampleDetPThreshold = sampleDetPThreshold,
     probeDetPThreshold  = probeDetPThreshold,
     samplesheet_md5     = unname(tools::md5sum(sheetPath)),
-    xreactive_md5       = unname(tools::md5sum(nonSpecificProbesPath))
+    xreactive_md5       = unname(tools::md5sum(crossReactiveProbes))
   )
 }
 
@@ -316,9 +316,9 @@
 
 runPreprocess <- function(
   dataDirectory,
-  nonSpecificProbesPath,
-  targetPattern,
-  datasetClass,
+  crossReactiveProbes,
+  samplesheet,
+  gdsOutput,
   annotationPackage,
   sampleDetPThreshold = 0.01,
   probeDetPThreshold = 0.01,
@@ -342,9 +342,9 @@ runPreprocess <- function(
   )
   parsed <- .validateArgs(
     dataDirectory         = dataDirectory,
-    nonSpecificProbesPath = nonSpecificProbesPath,
-    targetPattern         = targetPattern,
-    datasetClass          = datasetClass,
+    crossReactiveProbes   = crossReactiveProbes,
+    samplesheet           = samplesheet,
+    gdsOutput           = gdsOutput,
     annotationPackage     = annotationPackage,
     sampleDetPThreshold   = sampleDetPThreshold,
     probeDetPThreshold    = probeDetPThreshold,
@@ -383,10 +383,12 @@ runPreprocess <- function(
     }
   }
 
-  gdsPath <- paste0(datasetClass, ".gds")
+  # `gdsOutput` is the literal path to the output GDS file (e.g. ".../x.gds");
+  # the build-key sidecar sits next to it as "<gdsOutput>.buildkey.rds".
+  gdsPath <- gdsOutput
   buildKey <- .currentBuildKey(
     annotationPackage, sampleDetPThreshold, probeDetPThreshold,
-    parsed$sheetPath, nonSpecificProbesPath
+    parsed$sheetPath, crossReactiveProbes
   )
 
   cached <- NULL
@@ -467,10 +469,16 @@ runPreprocess <- function(
     gdsPath, nrow(targets)
   ))
 
+  # `rebuilt` records whether this call actually (re)wrote the GDS -- TRUE on a
+  # forced rebuild OR a cache miss/mismatch, FALSE when a valid cache was reused.
+  # analyze() cascades it downstream: a fresh GDS makes any cached normbetas /
+  # FUN outputs stale, so they must be recomputed even when `rebuild` did not name
+  # them.
   invisible(list(
     gds_path = gdsPath,
     targets = targets,
     keepSamples = keepSamples,
-    keepProbes = keepProbes
+    keepProbes = keepProbes,
+    rebuilt = is.null(cached)
   ))
 }

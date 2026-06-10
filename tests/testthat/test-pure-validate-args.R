@@ -59,9 +59,9 @@
 .default_args <- function(fx, ...) {
     base <- list(
         dataDirectory         = fx$data_dir,
-        nonSpecificProbesPath = fx$xreact_path,
-        targetPattern         = "real",
-        datasetClass          = "test",
+        crossReactiveProbes   = fx$xreact_path,
+        samplesheet           = fx$sheet_path,
+        gdsOutput             = "test.gds",
         annotationPackage     = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
         sampleDetPThreshold   = 0.01,
         probeDetPThreshold    = 0.01,
@@ -139,19 +139,19 @@ test_that(".validateArgs errors when dataDirectory does not exist", {
         regexp = "dataDirectory.*existing directory")
 })
 
-test_that(".validateArgs errors when nonSpecificProbesPath does not exist", {
+test_that(".validateArgs errors when crossReactiveProbes does not exist", {
     fx <- .make_fixture()
     on.exit(unlink(fx$root, recursive = TRUE), add = TRUE)
     expect_error(
-        .call_validate(fx, nonSpecificProbesPath = file.path(fx$root, "missing.csv")),
-        regexp = "nonSpecificProbesPath.*existing file")
+        .call_validate(fx, crossReactiveProbes = file.path(fx$root, "missing.csv")),
+        regexp = "crossReactiveProbes.*existing file")
 })
 
-test_that(".validateArgs errors when targetPattern doesn't resolve to a samplesheet", {
+test_that(".validateArgs errors when samplesheet does not point to an existing file", {
     fx <- .make_fixture()
     on.exit(unlink(fx$root, recursive = TRUE), add = TRUE)
-    expect_error(.call_validate(fx, targetPattern = "no_such_pattern"),
-                 regexp = "samplesheet_no_such_pattern\\.csv")
+    expect_error(.call_validate(fx, samplesheet = file.path(fx$root, "no_such_sheet.csv")),
+                 regexp = "samplesheet.*existing file")
 })
 
 # ---- annotation package check ---------------------------------------

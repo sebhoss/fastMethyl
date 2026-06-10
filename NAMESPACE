@@ -3,12 +3,23 @@
 #
 # Hand-maintained (not roxygen-generated).
 #
-# analyze() is the sole public entry point: one call runs the full
+# analyze() is the primary public entry point: one call runs the full
 # preprocessing + (optional) normalisation + the caller's analysis. The reader
 # and preprocess machinery (readMethArray*, processMethArray*, runPreprocess)
 # stays internal -- analyze() composes it, and analyze(..., FUN = NULL) covers
 # the "just build the QC'd GDS" case.
 export(analyze)
+
+# Read-side adapters: project the QC'd GDS into the container a non-GDS-aware
+# downstream package wants -- a dense matrix for FactoMineR/prcomp/irlba, or a
+# SummarizedExperiment for limma/sva. Usable on the handle analyze()'s FUN
+# receives or on a GDS path.
+export(gdsBetaMatrix, gdsSummarizedExperiment)
+
+# Streaming between-array normalisation: reproduces wateRmelon::dasen bit-for-bit
+# while reading the GDS one column block at a time (no full matrix, no scratch
+# GDS). The default between-array normalizer the analyze() orchestration uses.
+export(gdsDasen)
 
 importFrom(minfi,
            getProbeInfo, getManifest, getManifestInfo, getControlAddress,
@@ -23,7 +34,7 @@ importFrom(gdsfmt, createfn.gds, openfn.gds, add.gdsn, closefn.gds,
            copyto.gdsn)
 importFrom(illuminaio, readIDAT)
 importFrom(DelayedArray, realize, getAutoRealizationBackend)
-importFrom(SummarizedExperiment, "colData<-")
+importFrom(SummarizedExperiment, SummarizedExperiment, "rowData<-", "colData<-")
 importFrom(S4Vectors, DataFrame)
 importClassesFrom(S4Vectors, DataFrame)
 importFrom(methods, as, is)

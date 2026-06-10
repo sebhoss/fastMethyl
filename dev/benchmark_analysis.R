@@ -237,22 +237,22 @@ minfiPipeline <- function(coh) {
 }
 
 # fastMethyl: analyze() with FUN = NULL -- the "just build the QC'd GDS" path,
-# which is exactly the preprocessing under test. forceRebuild = TRUE so the
+# which is exactly the preprocessing under test. rebuild = "all" so the
 # build-key cache never short-circuits a timed run.
 fmPipeline <- function(coh) {
   cls <- tempfile("bench_fm_", tmpdir = scratch)
   args <- list(
     dataDirectory         = coh$dir,
-    nonSpecificProbesPath = coh$xreact,
-    targetPattern         = "bench",
-    datasetClass          = cls,
+    crossReactiveProbes   = coh$xreact,
+    samplesheet           = file.path(coh$dir, "samplesheet_bench.csv"),
+    gdsOutput             = paste0(cls, ".gds"),
     annotationPackage     = annoPkg,
     sampleDetPThreshold   = sampleThreshold,
     probeDetPThreshold    = probeThreshold,
-    forceRebuild          = TRUE,
+    rebuild               = "all",
     compress              = bpCompress,
     verbose               = 0L,
-    FUN                   = NULL)
+    analysis              = NULL)
   if (bpKind == "snow") {
     # One chunk per worker (tasks = workers) so the index tables are serialised
     # once per worker per dispatch, not once per sample. readerWorkers is ignored
@@ -310,6 +310,11 @@ for (n in Ns) {
     fastMethyl_gds_MiB = fm_gds,
     upstream_avg_MiB = mib(up$avg),
     fastMethyl_avg_MiB = mib(fm$avg))
+  # Live per-cohort line (message -> unbuffered stderr) so a long sweep shows
+  # progress instead of only printing the table at the very end.
+  message(sprintf("  -> N=%d  up=%ss fm=%ss  speedup=%s  peak up=%sM fm=%sM",
+                  n, format(round(up$time, 1)), format(round(fm$time, 1)),
+                  format(speedup), format(mib(up$peak)), format(mib(fm$peak))))
 }
 .sweepScratch()   # final safety net, in case the last cohort left anything
 cat(sprintf("\n=== IDAT -> QC'd %s GDS: time + peak memory (downstream analysis excluded) ===\n",

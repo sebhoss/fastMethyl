@@ -1,6 +1,6 @@
 Package: fastMethyl
 Title: Fast, Parallel Preprocessing of Illumina Methylation Arrays
-Version: 2026.0.6061400
+Version: 2026.0.6102044
 Authors@R:
     person("Sebastian", "Hoß", email = "seb@xn--ho-hia.de",
            role = c("aut", "cre"))

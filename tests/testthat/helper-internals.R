@@ -33,6 +33,8 @@
   ".currentBuildKey",
   ".compareBuildKey",
   ".withGds",
+  ".resolveRebuild",
+  ".resolveNormalize",
   # No longer exported (analyze() is the sole public entry point), but the tests
   # exercise the preprocessing machinery directly, so expose it here by bare
   # name -- the same mechanism used for the dotted internals above.

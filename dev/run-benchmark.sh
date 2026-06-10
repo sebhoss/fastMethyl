@@ -2,11 +2,17 @@
 # SPDX-FileCopyrightText: The fastMethyl authors
 # SPDX-License-Identifier: Artistic-2.0
 #
-# Runs the fastMethyl benchmark (dev/benchmark_analysis.R) inside a
-# `systemd-run --user --scope` cgroup v2 scope whose CPU / memory / IO limits are
-# sized to the cohort. This is the ONLY supported way to run the benchmark: the
-# limits live here, set per call, rather than in .ilo.rc -- so they can be tuned
-# without editing a committed file, and every run is bounded and reproducible.
+# Runs a fastMethyl benchmark inside a `systemd-run --user --scope` cgroup v2
+# scope whose CPU / memory / IO limits are sized to the cohort. This is the ONLY
+# supported way to run a benchmark: the limits live here, set per call, rather
+# than in .ilo.rc -- so they can be tuned without editing a committed file, and
+# every run is bounded and reproducible.
+#
+# BENCH_SCRIPT selects which benchmark to run (default the preprocessing one):
+#   dev/benchmark_analysis.R  IDAT -> QC'd GDS, fastMethyl vs upstream minfi
+#   dev/benchmark_pca.R       analysis-phase PCA routes on a normalised GDS
+# The same envelope bounds both; the PCA benchmark is far lighter (it reuses one
+# built GDS), so the envelope sized for the preprocessing run is ample for it.
 #
 # The rootless podman container nests under the scope (via --cgroups=split in
 # .ilo.rc), so the caps reach the R master and its forked reader workers.
@@ -66,6 +72,8 @@ BENCH_BPPARAM="${BENCH_BPPARAM:-multicore}"    # fastMethyl reader backend:
 # `-` (not `:-`): an explicitly empty BENCH_COMPRESS means "no compression" and
 # must survive; only a genuinely unset var falls back to the LZ4_RA default.
 BENCH_COMPRESS="${BENCH_COMPRESS-LZ4_RA}"       # GDS codec: "LZ4_RA" or "" (none)
+BENCH_SCRIPT="${BENCH_SCRIPT:-dev/benchmark_analysis.R}"  # which benchmark to run
+BENCH_PCA_NCP="${BENCH_PCA_NCP:-10}"            # components for the PCA benchmark
 IO_RATE="${IO_RATE:-120M}"
 scratch="${BENCH_SCRATCH:-$PWD/dev/scratch}"
 
@@ -127,4 +135,4 @@ exec systemd-run --user --scope --unit="fm-bench-$$" -p Delegate=yes \
   -p "MemoryHigh=${mem_high}G" \
   -p "MemoryMax=${mem_max}G" \
   -p "IOWriteBandwidthMax=$iodev $IO_RATE" \
-  ilo bash -c "env BENCH_N='$BENCH_N' BENCH_WORKERS='$BENCH_WORKERS' BENCH_SIDES='$BENCH_SIDES' BENCH_BPPARAM='$BENCH_BPPARAM' BENCH_COMPRESS='$BENCH_COMPRESS' R_LIBS=dev/scratch/rlib:/usr/local/lib/R/site-library Rscript dev/benchmark_analysis.R"
+  ilo bash -c "env BENCH_N='$BENCH_N' BENCH_WORKERS='$BENCH_WORKERS' BENCH_SIDES='$BENCH_SIDES' BENCH_BPPARAM='$BENCH_BPPARAM' BENCH_COMPRESS='$BENCH_COMPRESS' BENCH_PCA_NCP='$BENCH_PCA_NCP' R_LIBS=dev/scratch/rlib:/usr/local/lib/R/site-library Rscript $BENCH_SCRIPT"
