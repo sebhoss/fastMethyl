@@ -274,6 +274,32 @@ You'll also need the annotation package for your array, e.g.
 `BiocManager::install("IlluminaHumanMethylationEPICanno.ilm10b4.hg19")` (EPIC)
 or `...450kanno.ilmn12.hg19` (450k).
 
+### Installing a specific version
+
+For a reproducible analysis, pin the install to a released version rather than
+the moving `main` branch. Each release is a git **tag** (named after the package
+version, e.g. `2026.0.6061400`, and published as a GitHub release); append
+`@<tag>` to the package spec:
+
+```r
+BiocManager::install("sebhoss/fastMethyl@2026.0.6061400", update = FALSE)
+```
+
+The `@<tag>` resolves against GitHub, so it works the same with
+`remotes`/`pak`:
+
+```r
+remotes::install_github("sebhoss/fastMethyl@2026.0.6061400")
+pak::pak("sebhoss/fastMethyl@2026.0.6061400")
+```
+
+The tag name matches the package's `Version:`, so after installing,
+`packageVersion("fastMethyl")` reports the same `2026.0.6061400` you pinned. If
+you need an exact, unmovable point that predates a tag, the same syntax accepts a
+**commit SHA** (`sebhoss/fastMethyl@89b5904`). Browse the available versions on
+the repository's [releases](https://github.com/sebhoss/fastMethyl/releases) and
+[tags](https://github.com/sebhoss/fastMethyl/tags) pages.
+
 ### Verify
 
 ```r
