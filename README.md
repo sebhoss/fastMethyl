@@ -430,7 +430,7 @@ analyze(
 ```
 
 `gdsDasen()` is also callable standalone (on the open handle your `analysis`
-receives, or on a GDS path) — handy if you build the GDS with `analyze(FUN = NULL)`
+receives, or on a GDS path) — handy if you build the GDS with `analyze(analysis = NULL)`
 and normalise it separately.
 
 **Your function is `function(gds, res)`** — it receives two arguments:

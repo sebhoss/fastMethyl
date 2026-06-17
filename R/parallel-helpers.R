@@ -19,16 +19,16 @@
 .normalize_verbose <- function(verbose) {
   if (is.logical(verbose)) {
     if (length(verbose) != 1L || is.na(verbose)) {
-      stop("`verbose` must be a single TRUE/FALSE or integer 0/1/2")
+      .userStop("`verbose` must be a single TRUE/FALSE or integer 0/1/2.")
     }
     return(if (verbose) 1L else 0L)
   }
   if (!is.numeric(verbose) || length(verbose) != 1L || !is.finite(verbose)) {
-    stop("`verbose` must be a single TRUE/FALSE or integer 0/1/2")
+    .userStop("`verbose` must be a single TRUE/FALSE or integer 0/1/2.")
   }
   v <- as.integer(verbose)
   if (v < 0L || v > 2L) {
-    stop("`verbose` must be 0, 1, or 2 (got ", verbose, ")")
+    .userStop("`verbose` must be 0, 1, or 2 (got ", verbose, ").")
   }
   v
 }

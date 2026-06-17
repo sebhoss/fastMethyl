@@ -26,11 +26,8 @@
 # current user cannot read it (e.g. a samplesheet owned by another user).
 .assertReadable <- function(path, label) {
   if (file.access(path, mode = 4L) != 0L) {
-    stop(
-      sprintf("`%s` (\"%s\") exists but is not readable by the current user.",
-              label, path),
-      call. = FALSE
-    )
+    .userStopf("`%s` (\"%s\") exists but is not readable by the current user.",
+               label, path)
   }
   invisible(TRUE)
 }
@@ -48,36 +45,27 @@
 .assertWritableTarget <- function(path, label) {
   parent <- dirname(path)
   if (!dir.exists(parent)) {
-    stop(
-      sprintf(
-        paste0(
-          "`%s` (\"%s\") points into a directory that does not exist:\n  %s\n",
-          "  Create the directory first, or pass a path under one that exists ",
-          "(an absolute path removes any ambiguity about the working directory)."
-        ),
-        label, path, normalizePath(parent, mustWork = FALSE)
+    .userStopf(
+      paste0(
+        "`%s` (\"%s\") points into a directory that does not exist:\n  %s\n",
+        "  Create the directory first, or pass a path under one that exists ",
+        "(an absolute path removes any ambiguity about the working directory)."
       ),
-      call. = FALSE
+      label, path, normalizePath(parent, mustWork = FALSE)
     )
   }
   if (file.access(parent, mode = 2L) != 0L) {
-    stop(
-      sprintf(
-        paste0("`%s` (\"%s\"): the directory %s is not writable, so the output ",
-               "file cannot be created there."),
-        label, path, normalizePath(parent)
-      ),
-      call. = FALSE
+    .userStopf(
+      paste0("`%s` (\"%s\"): the directory %s is not writable, so the output ",
+             "file cannot be created there."),
+      label, path, normalizePath(parent)
     )
   }
   if (file.exists(path) && file.access(path, mode = 2L) != 0L) {
-    stop(
-      sprintf(
-        paste0("`%s` (\"%s\") already exists but is not writable, so it cannot ",
-               "be overwritten."),
-        label, path
-      ),
-      call. = FALSE
+    .userStopf(
+      paste0("`%s` (\"%s\") already exists but is not writable, so it cannot ",
+             "be overwritten."),
+      label, path
     )
   }
   invisible(TRUE)
@@ -100,62 +88,49 @@
   .check_annotation = function(pkg) requireNamespace(pkg, quietly = TRUE)
 ) {
   # --- types + ranges -----------------------------------------------
-  stopifnot(
-    "`dataDirectory` must be a single non-empty string" =
-      is.character(dataDirectory) && length(dataDirectory) == 1L &&
-      !is.na(dataDirectory) && nzchar(dataDirectory),
-    "`crossReactiveProbes` must be a single non-empty string" =
-      is.character(crossReactiveProbes) &&
-      length(crossReactiveProbes) == 1L &&
-      !is.na(crossReactiveProbes) && nzchar(crossReactiveProbes),
-    "`samplesheet` must be a single non-empty string" =
-      is.character(samplesheet) && length(samplesheet) == 1L &&
-      !is.na(samplesheet) && nzchar(samplesheet),
-    "`gdsOutput` must be a single non-empty string" =
-      is.character(gdsOutput) && length(gdsOutput) == 1L &&
-      !is.na(gdsOutput) && nzchar(gdsOutput),
-    "`annotationPackage` must be a single non-empty string" =
-      is.character(annotationPackage) &&
-      length(annotationPackage) == 1L &&
-      !is.na(annotationPackage) && nzchar(annotationPackage),
-    "`sampleDetPThreshold` must be a single number in (0, 1)" =
-      is.numeric(sampleDetPThreshold) &&
-      length(sampleDetPThreshold) == 1L &&
-      !is.na(sampleDetPThreshold) &&
-      sampleDetPThreshold > 0 && sampleDetPThreshold < 1,
-    "`probeDetPThreshold` must be a single number in (0, 1)" =
-      is.numeric(probeDetPThreshold) &&
-      length(probeDetPThreshold) == 1L &&
-      !is.na(probeDetPThreshold) &&
-      probeDetPThreshold > 0 && probeDetPThreshold < 1,
-    "`forceRebuild` must be a single TRUE or FALSE" =
-      is.logical(forceRebuild) && length(forceRebuild) == 1L &&
-      !is.na(forceRebuild),
-    "`readerWorkers` must be a positive integer" =
-      is.numeric(readerWorkers) && length(readerWorkers) == 1L &&
-      !is.na(readerWorkers) && readerWorkers >= 1L &&
-      readerWorkers == as.integer(readerWorkers)
-  )
+  # .check raises a classed, actionable error (fastMethyl_user_error) per failed
+  # precondition, so a bad argument reads as the input problem it is rather than
+  # as an internal assertion when it surfaces through analyze()'s phase wrappers.
+  .check(is.character(dataDirectory) && length(dataDirectory) == 1L &&
+           !is.na(dataDirectory) && nzchar(dataDirectory),
+         "`dataDirectory` must be a single non-empty string.")
+  .check(is.character(crossReactiveProbes) && length(crossReactiveProbes) == 1L &&
+           !is.na(crossReactiveProbes) && nzchar(crossReactiveProbes),
+         "`crossReactiveProbes` must be a single non-empty string.")
+  .check(is.character(samplesheet) && length(samplesheet) == 1L &&
+           !is.na(samplesheet) && nzchar(samplesheet),
+         "`samplesheet` must be a single non-empty string.")
+  .check(is.character(gdsOutput) && length(gdsOutput) == 1L &&
+           !is.na(gdsOutput) && nzchar(gdsOutput),
+         "`gdsOutput` must be a single non-empty string.")
+  .check(is.character(annotationPackage) && length(annotationPackage) == 1L &&
+           !is.na(annotationPackage) && nzchar(annotationPackage),
+         "`annotationPackage` must be a single non-empty string.")
+  .check(is.numeric(sampleDetPThreshold) && length(sampleDetPThreshold) == 1L &&
+           !is.na(sampleDetPThreshold) &&
+           sampleDetPThreshold > 0 && sampleDetPThreshold < 1,
+         "`sampleDetPThreshold` must be a single number in (0, 1).")
+  .check(is.numeric(probeDetPThreshold) && length(probeDetPThreshold) == 1L &&
+           !is.na(probeDetPThreshold) &&
+           probeDetPThreshold > 0 && probeDetPThreshold < 1,
+         "`probeDetPThreshold` must be a single number in (0, 1).")
+  .check(is.logical(forceRebuild) && length(forceRebuild) == 1L &&
+           !is.na(forceRebuild),
+         "`forceRebuild` must be a single TRUE or FALSE.")
+  .check(is.numeric(readerWorkers) && length(readerWorkers) == 1L &&
+           !is.na(readerWorkers) && readerWorkers >= 1L &&
+           readerWorkers == as.integer(readerWorkers),
+         "`readerWorkers` must be a positive integer.")
 
   # --- filesystem existence (value-bearing errors) ------------------
   if (!dir.exists(dataDirectory)) {
-    stop(
-      sprintf(
-        "`dataDirectory` (\"%s\") does not point to an existing directory.",
-        dataDirectory
-      ),
-      call. = FALSE
-    )
+    .userStopf("`dataDirectory` (\"%s\") does not point to an existing directory.",
+               dataDirectory)
   }
   .assertReadable(dataDirectory, "dataDirectory")
   if (!file.exists(crossReactiveProbes)) {
-    stop(
-      sprintf(
-        "`crossReactiveProbes` (\"%s\") does not point to an existing file.",
-        crossReactiveProbes
-      ),
-      call. = FALSE
-    )
+    .userStopf("`crossReactiveProbes` (\"%s\") does not point to an existing file.",
+               crossReactiveProbes)
   }
   .assertReadable(crossReactiveProbes, "crossReactiveProbes")
 
@@ -170,13 +145,8 @@
   # `dataDirectory`, so the samplesheet may live anywhere.
   sheetPath <- samplesheet
   if (!file.exists(sheetPath)) {
-    stop(
-      sprintf(
-        "`samplesheet` (\"%s\") does not point to an existing file.",
-        sheetPath
-      ),
-      call. = FALSE
-    )
+    .userStopf("`samplesheet` (\"%s\") does not point to an existing file.",
+               sheetPath)
   }
   .assertReadable(sheetPath, "samplesheet")
 
@@ -186,34 +156,31 @@
   # transitively loads minfi, which defeats the point of the pure
   # runner). Default in production is requireNamespace.
   if (!.check_annotation(annotationPackage)) {
-    stop(
-      sprintf(
-        "`annotationPackage` (\"%s\") is not installed. Run BiocManager::install(\"%s\") and re-run the pipeline.",
-        annotationPackage, annotationPackage
-      ),
-      call. = FALSE
+    .userStopf(
+      paste0("`annotationPackage` (\"%s\") is not installed. Run ",
+             "BiocManager::install(\"%s\") and re-run the pipeline."),
+      annotationPackage, annotationPackage
     )
   }
 
   # --- samplesheet structure ----------------------------------------
-  sampleData <- utils::read.csv(sheetPath, stringsAsFactors = FALSE)
+  # read.csv can itself fail on an unparseable file; surface that with the
+  # offending path rather than letting a bare scan() error reach the user.
+  sampleData <- tryCatch(
+    utils::read.csv(sheetPath, stringsAsFactors = FALSE),
+    error = function(e) {
+      .userStopf("could not read the samplesheet CSV at %s: %s",
+                 sheetPath, conditionMessage(e))
+    }
+  )
   if (!"Basename" %in% names(sampleData)) {
-    stop(
-      sprintf(
-        "samplesheet at %s is missing the required `Basename` column.\n  Columns found: %s.",
-        sheetPath, paste(names(sampleData), collapse = ", ")
-      ),
-      call. = FALSE
+    .userStopf(
+      "samplesheet at %s is missing the required `Basename` column.\n  Columns found: %s.",
+      sheetPath, paste(names(sampleData), collapse = ", ")
     )
   }
   if (any(is.na(sampleData$Basename)) || any(!nzchar(sampleData$Basename))) {
-    stop(
-      sprintf(
-        "samplesheet at %s has empty or NA Basename entries.",
-        sheetPath
-      ),
-      call. = FALSE
-    )
+    .userStopf("samplesheet at %s has empty or NA Basename entries.", sheetPath)
   }
 
   # --- IDAT files exist for every sample ----------------------------
@@ -226,33 +193,27 @@
     bad <- basenames[grn_missing | red_missing]
     n_bad <- length(bad)
     n_show <- min(n_bad, 5L)
-    stop(n_bad,
+    .userStop(
+      n_bad,
       " sample(s) from the samplesheet have missing IDAT files:\n  ",
       paste(bad[seq_len(n_show)], collapse = "\n  "),
-      if (n_bad > n_show) {
-        sprintf("\n  ... and %d more", n_bad - n_show)
-      } else {
-        ""
-      },
-      "\n  (Looked for both .idat and .idat.gz under ",
-      dataDirectory, ".)",
-      call. = FALSE
+      if (n_bad > n_show) sprintf("\n  ... and %d more", n_bad - n_show) else "",
+      "\n  (Looked for both .idat and .idat.gz under ", dataDirectory, ".)"
     )
   }
 
   # --- cross-reactive probes CSV structure --------------------------
-  xReactiveProbes <- utils::read.csv(
-    file = crossReactiveProbes,
-    stringsAsFactors = FALSE
+  xReactiveProbes <- tryCatch(
+    utils::read.csv(file = crossReactiveProbes, stringsAsFactors = FALSE),
+    error = function(e) {
+      .userStopf("could not read the cross-reactive probes CSV at %s: %s",
+                 crossReactiveProbes, conditionMessage(e))
+    }
   )
   if (!"TargetID" %in% names(xReactiveProbes)) {
-    stop(
-      sprintf(
-        "CSV at %s is missing the required `TargetID` column.\n  Columns found: %s.",
-        crossReactiveProbes,
-        paste(names(xReactiveProbes), collapse = ", ")
-      ),
-      call. = FALSE
+    .userStopf(
+      "CSV at %s is missing the required `TargetID` column.\n  Columns found: %s.",
+      crossReactiveProbes, paste(names(xReactiveProbes), collapse = ", ")
     )
   }
 
@@ -407,10 +368,8 @@ runPreprocess <- function(
   # the cost of runtime. It does not change the values, so it is deliberately NOT
   # part of the build key -- a cached GDS reads back identically whatever codec it
   # was written with.
-  stopifnot(
-    "`compress` must be a single string (e.g. \"LZ4_RA\" or \"\")" =
-      is.character(compress) && length(compress) == 1L && !is.na(compress)
-  )
+  .check(is.character(compress) && length(compress) == 1L && !is.na(compress),
+         "`compress` must be a single string (e.g. \"LZ4_RA\" or \"\").")
   parsed <- .validateArgs(
     dataDirectory         = dataDirectory,
     crossReactiveProbes   = crossReactiveProbes,
@@ -440,11 +399,9 @@ runPreprocess <- function(
     BPPARAM <- BiocParallel::MulticoreParam(workers = readerWorkers)
   } else {
     if (!methods::is(BPPARAM, "BiocParallelParam")) {
-      stop("`BPPARAM` must be a BiocParallelParam object (e.g. ",
-        "BiocParallel::SnowParam()), or NULL to derive one from ",
-        "readerWorkers.",
-        call. = FALSE
-      )
+      .userStop("`BPPARAM` must be a BiocParallelParam object (e.g. ",
+                "BiocParallel::SnowParam()), or NULL to derive one from ",
+                "readerWorkers.")
     }
     if (readerWorkers != 1L) {
       warning("`BPPARAM` was supplied, so `readerWorkers` is ignored; ",
@@ -529,7 +486,23 @@ runPreprocess <- function(
     )
     # Record the build key only after the GDS write succeeds, so an
     # interrupted build never leaves a sidecar claiming a stale file is valid.
-    saveRDS(buildKey, .buildKeyPath(gdsPath))
+    # A sidecar-write failure (e.g. disk full) must not discard a GDS that was
+    # written successfully: warn and continue -- the only consequence is the
+    # next run cannot verify the cache and rebuilds with a warning.
+    tryCatch(
+      saveRDS(buildKey, .buildKeyPath(gdsPath)),
+      error = function(e) {
+        msg <- sprintf(
+          paste0(
+            "the GDS at %s was written, but its build-key sidecar could not ",
+            "be saved (%s); a later run will be unable to verify the cache ",
+            "and will rebuild."
+          ),
+          gdsPath, conditionMessage(e)
+        )
+        warning(msg, call. = FALSE)
+      }
+    )
     targets <- res$targets
     keepSamples <- res$keepSamples
     keepProbes <- res$keepProbes

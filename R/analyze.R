@@ -65,17 +65,21 @@
         # gds.class method. Loading bigmelon's namespace registers that method,
         # so the wateRmelon generic then dispatches on the open GDS handle.
         if (!requireNamespace("bigmelon", quietly = TRUE)) {
-          stop("outlierRemoval = \"outlyx\" needs the bigmelon package.",
-               call. = FALSE)
+          .userStop("outlierRemoval = \"outlyx\" needs the bigmelon package. ",
+                    "Install it with BiocManager::install(\"bigmelon\"), or pass ",
+                    "outlierRemoval = \"none\" / your own function instead.")
         }
         out <- wateRmelon::outlyx(gds, plot = FALSE)
         !out$outliers
       },
-      stop(sprintf("unknown outlierRemoval method '%s'; use 'outlyx', 'none', or a function.", spec), call. = FALSE)
+      .userStopf(
+        "unknown outlierRemoval method '%s'; use 'outlyx', 'none', or a function(gds, res).",
+        spec
+      )
     ))
   }
-  stop("`outlierRemoval` must be a method name, a function(gds, res), or \"none\".",
-       call. = FALSE)
+  .userStop("`outlierRemoval` must be a method name (\"outlyx\" / \"none\"), ",
+            "a function(gds, res), or \"none\".")
 }
 
 # Resolve a `normalize` spec to a function(gds, res, keep) that writes a node, or
@@ -98,11 +102,14 @@
         }
         invisible(NULL)
       },
-      stop(sprintf("unknown normalization method '%s'; use 'dasen', 'none', or a function.", spec), call. = FALSE)
+      .userStopf(
+        "unknown normalization method '%s'; use 'dasen', 'none', or a function(gds, res, keep).",
+        spec
+      )
     ))
   }
-  stop("`normalize` must be a method name, a function(gds, res, keep), or \"none\".",
-       call. = FALSE)
+  .userStop("`normalization` must be a method name (\"dasen\" / \"none\"), ",
+            "a function(gds, res, keep), or \"none\".")
 }
 
 # Resolve the staged `rebuild` request to per-stage flags. The pipeline is a
@@ -126,8 +133,8 @@
     spec <- if (spec) "all" else "none"
   }
   if (!(is.character(spec) && length(spec) == 1L && !is.na(spec))) {
-    stop("`rebuild` must be a stage name (\"build\" / \"normalize\"), ",
-         "\"none\" / \"all\", or a single logical.", call. = FALSE)
+    .userStop("`rebuild` must be a stage name (\"build\" / \"normalize\"), ",
+              "\"none\" / \"all\", or a single logical.")
   }
   # Ordered analyze-owned stages; a named stage selects it and all following.
   stages <- c("build", "normalize")
@@ -138,8 +145,10 @@
   } else if (spec == "normalize") {
     "normalize"
   } else {
-    msg <- sprintf("unknown rebuild stage '%s'; use 'none'/'build'/'normalize'/'all' or a logical.", spec)
-    stop(msg, call. = FALSE)
+    .userStopf(
+      "unknown rebuild stage '%s'; use 'none' / 'build' / 'normalize' / 'all', or a logical.",
+      spec
+    )
   }
   list(build = "build" %in% set, normalize = "normalize" %in% set)
 }
@@ -158,23 +167,31 @@ analyze <- function(..., analysis = NULL,
   # The two analysis hooks (FUN -> analysis, normalize -> normalization) are
   # formals, so their old names arrive via `...`; the preprocessing renames are
   # forwarded onward through `dots`. An explicit new-name value always wins.
+  #
+  # Detection is by NAME PRESENCE (`has()`), not by value. A user who passes a
+  # deprecated name explicitly as NULL -- e.g. the legacy `FUN = NULL` "just
+  # build the GDS" form -- must still have it stripped from `dots`; checking
+  # `!is.null(dots$FUN)` would skip the strip (the value *is* NULL), leaving FUN
+  # in `dots` to be forwarded to .preprocess, which has no such formal and would
+  # abort with an opaque "unused argument (FUN = NULL)".
   .warnDep <- function(old, new) {
     warning(sprintf("`%s` is deprecated; use `%s`.", old, new), call. = FALSE)
   }
-  if (!is.null(dots$FUN)) {
+  has <- function(k) k %in% names(dots)
+  if (has("FUN")) {
     .warnDep("FUN", "analysis")
     if (is.null(analysis)) analysis <- dots$FUN
     dots$FUN <- NULL
   }
-  if (!is.null(dots$normalize)) {
+  if (has("normalize")) {
     .warnDep("normalize", "normalization")
     if (identical(normalization, "none")) normalization <- dots$normalize
     dots$normalize <- NULL
   }
   # nonSpecificProbesPath -> crossReactiveProbes is a pure rename.
-  if (!is.null(dots$nonSpecificProbesPath)) {
+  if (has("nonSpecificProbesPath")) {
     .warnDep("nonSpecificProbesPath", "crossReactiveProbes")
-    if (is.null(dots$crossReactiveProbes)) {
+    if (!has("crossReactiveProbes")) {
       dots$crossReactiveProbes <- dots$nonSpecificProbesPath
     }
     dots$nonSpecificProbesPath <- NULL
@@ -182,9 +199,9 @@ analyze <- function(..., analysis = NULL,
   # targetPattern named a filename fragment under dataDirectory; the current
   # `samplesheet` is the path itself, so reconstruct the old convention to keep
   # legacy calls working.
-  if (!is.null(dots$targetPattern)) {
+  if (has("targetPattern")) {
     .warnDep("targetPattern", "samplesheet")
-    if (is.null(dots$samplesheet)) {
+    if (!has("samplesheet") && !is.null(dots$targetPattern)) {
       sheet <- paste0("samplesheet_", dots$targetPattern, ".csv")
       dots$samplesheet <- file.path(dots$dataDirectory, sheet)
     }
@@ -192,16 +209,17 @@ analyze <- function(..., analysis = NULL,
   }
   # datasetClass was a prefix (the GDS was "<datasetClass>.gds"); the current
   # `gdsOutput` is the full path, so append the extension for legacy calls.
-  if (!is.null(dots$datasetClass)) {
+  if (has("datasetClass")) {
     .warnDep("datasetClass", "gdsOutput")
-    if (is.null(dots$gdsOutput)) dots$gdsOutput <- paste0(dots$datasetClass, ".gds")
+    if (!has("gdsOutput") && !is.null(dots$datasetClass)) {
+      dots$gdsOutput <- paste0(dots$datasetClass, ".gds")
+    }
     dots$datasetClass <- NULL
   }
 
   if (!is.null(analysis) && !is.function(analysis)) {
-    stop("`analysis`, when supplied, must be a function of the open GDS, e.g. ",
-         "function(gds, res) { ... }; omit it to just build the GDS.",
-         call. = FALSE)
+    .userStop("`analysis`, when supplied, must be a function of the open GDS, ",
+              "e.g. function(gds, res) { ... }; omit it to just build the GDS.")
   }
   outlierFn <- .resolveOutlierRemoval(outlierRemoval)
   normalizeFn <- .resolveNormalize(normalization)
@@ -219,12 +237,56 @@ analyze <- function(..., analysis = NULL,
   rb <- .resolveRebuild(dots$rebuild, dots$forceRebuild)
   dots$rebuild <- NULL
   dots$forceRebuild <- rb$build
+
+  # Guard the forwarded arguments. The real .preprocess (runPreprocess) has fixed
+  # formals and no `...`, so a stray or misspelled name in `dots` would otherwise
+  # surface as R's opaque "unused argument" error from inside do.call. Catch it
+  # here and name both the offender and the valid arguments. A mock .preprocess
+  # that declares `...` accepts anything, so the check is skipped for it.
+  preFormals <- names(formals(.preprocess))
+  if (!("..." %in% preFormals)) {
+    named <- names(dots)
+    unknown <- setdiff(named[nzchar(named)], preFormals)
+    if (length(unknown) > 0L) {
+      # Hide internal (dotted) formals and the deprecated forceRebuild from the
+      # advertised list -- forceRebuild is named below under the aliases instead.
+      hide <- c(grep("^\\.", preFormals, value = TRUE), "forceRebuild")
+      valid <- setdiff(preFormals, hide)
+      .userStopf(
+        paste0(
+          "unknown argument(s) to analyze(): %s.\n",
+          "  Valid preprocessing arguments are: %s.\n",
+          "  analyze() also takes: analysis, outlierRemoval, normalization, ",
+          "rebuild, verbose.\n",
+          "  Using an old name? Deprecated aliases: FUN, normalize, ",
+          "nonSpecificProbesPath, targetPattern, datasetClass, forceRebuild. ",
+          "See ?analyze."
+        ),
+        paste(sprintf("`%s`", unknown), collapse = ", "),
+        paste(valid, collapse = ", ")
+      )
+    }
+  }
   vlog <- function(fmt, ...) {
     if (verbose >= 2L) message(sprintf(paste0("[analyze] ", fmt), ...))
   }
 
   vlog("starting; %s", .mem_report())
-  res <- do.call(.preprocess, dots)
+  # Every heavy step runs inside .withPhase: an unexpected failure anywhere in
+  # the call graph (minfi/gdsfmt/BiocParallel/base R) is caught and re-raised
+  # with what analyze() was doing, a remedy to try, and how to report a genuine
+  # bug. Errors we raise ourselves as fastMethyl_user_error already carry an
+  # actionable message and pass through unchanged.
+  res <- .withPhase(
+    "reading the IDATs and building the QC'd GDS",
+    do.call(.preprocess, dots),
+    hint = paste0(
+      "Re-run with verbose = 2 to see the last step before the failure. ",
+      "Confirm dataDirectory, samplesheet and crossReactiveProbes point to the ",
+      "intended files, that annotationPackage matches your array, and that the ",
+      "machine has enough free memory (lower readerWorkers if it ran out)."
+    )
+  )
   vlog("preprocessing complete: GDS %s (%s); %s",
        res$gds_path, .path_size(res$gds_path), .mem_report())
 
@@ -236,6 +298,17 @@ analyze <- function(..., analysis = NULL,
 
   vlog("opening GDS %s (%s); %s",
        res$gds_path, .path_size(res$gds_path), .mem_report())
+  # Wrap the opener so a corrupt/locked/incomplete GDS reports with context; the
+  # close still happens via .withGds's on.exit, so the wrapper cannot leak a handle.
+  openWithContext <- function(p) {
+    .withPhase(
+      sprintf("opening the QC'd GDS file at %s", p),
+      .open(p),
+      hint = paste0("The GDS may be incomplete or corrupt (for example from an ",
+                    "interrupted earlier run), or open in another process. ",
+                    "Re-run with rebuild = \"build\" to rebuild it from the IDATs.")
+    )
+  }
   .withGds(
     res$gds_path,
     function(gds) {
@@ -247,7 +320,16 @@ analyze <- function(..., analysis = NULL,
       keep <- NULL
       if (!is.null(outlierFn)) {
         vlog("running outlier removal; %s", .mem_report())
-        keep <- outlierFn(gds, res)
+        keep <- .withPhase(
+          "removing outliers",
+          outlierFn(gds, res),
+          hint = paste0(
+            "Built-in outlierRemoval = \"outlyx\" needs the bigmelon package ",
+            "and a GDS with methylated/unmethylated nodes. If you passed your ",
+            "own function, check it takes (gds, res) and returns a logical keep ",
+            "mask, one entry per sample."
+          )
+        )
         if (is.logical(keep)) {
           vlog("outlier removal kept %d/%d samples", sum(keep), length(keep))
         }
@@ -257,18 +339,34 @@ analyze <- function(..., analysis = NULL,
       res$outlierKeep <- keep
       if (!is.null(normalizeFn)) {
         vlog("running normalization; %s", .mem_report())
-        normalizeFn(gds, res, keep)
+        .withPhase(
+          "normalising the methylation values",
+          normalizeFn(gds, res, keep),
+          hint = paste0(
+            "Built-in normalization = \"dasen\" needs methylated/unmethylated ",
+            "intensity nodes and an fData$Type column of \"I\"/\"II\". If you ",
+            "passed your own function, check it takes (gds, res, keep)."
+          )
+        )
         vlog("normalization complete; %s", .mem_report())
       }
       if (!is.null(analysis)) {
         vlog("running analysis function; %s", .mem_report())
-        out <- analysis(gds, res)
+        out <- .withPhase(
+          "running your analysis function",
+          analysis(gds, res),
+          hint = paste0(
+            "This error came from the analysis function you supplied. Check it ",
+            "takes (gds, res) and handles this GDS; re-run with verbose = 2 to ",
+            "see how far it got."
+          )
+        )
         vlog("analysis function returned; %s", .mem_report())
         out
       } else {
         invisible(res)
       }
     },
-    .open = .open, .close = .close
+    .open = openWithContext, .close = .close
   )
 }

@@ -301,6 +301,55 @@ test_that("analyze remaps the deprecated FUN and normalize aliases", {
     expect_true(ran)                       # the deprecated normalize ran
 })
 
+test_that("analyze strips a deprecated alias passed as NULL (legacy FUN = NULL)", {
+    h <- .analyze_hooks()
+    expect_warning(
+        out <- analyze(dataDirectory = "D", FUN = NULL,
+                       .preprocess = h$pre, .open = h$open, .close = h$clos),
+        "FUN.*deprecated")
+    # FUN must not be forwarded to .preprocess: a fixed-formal runPreprocess
+    # would reject it ("unused argument"). Name-based stripping removes it even
+    # though the value is NULL (a value-based `!is.null` check would not).
+    expect_false("FUN" %in% names(h$log$ppargs))
+    # FUN = NULL means "just build the GDS", so the build result is returned and
+    # the GDS is never opened.
+    expect_identical(out, h$res)
+    expect_null(h$log$opened)
+})
+
+# ---- analyze() unknown-argument guard --------------------------------
+#
+# The real .preprocess (runPreprocess) has fixed formals and no `...`, so a
+# stray/misspelled name would surface as R's opaque "unused argument". analyze
+# catches it first with an actionable message. A fixed-formal mock (no `...`)
+# reproduces that surface here; the `function(...)` hooks elsewhere bypass it.
+
+test_that("analyze rejects an unknown forwarded argument, listing valid names", {
+    pre <- function(dataDirectory, annotationPackage, verbose, forceRebuild) {
+        list(gds_path = "/tmp/x.gds")
+    }
+    err <- tryCatch(
+        analyze(dataDirectory = "D", annotationPackage = "A", bogusArg = 1,
+                .preprocess = pre, .open = function(p) "G",
+                .close = function(g) NULL),
+        error = identity)
+    expect_s3_class(err, "fastMethyl_user_error")
+    expect_match(conditionMessage(err), "bogusArg")
+    expect_match(conditionMessage(err), "Valid preprocessing arguments")
+})
+
+test_that("analyze forwards analyze-injected args past the unknown-argument guard", {
+    # verbose and forceRebuild are injected by analyze; the guard must not flag
+    # them, so a fixed-formal .preprocess that declares them runs cleanly.
+    pre <- function(dataDirectory, annotationPackage, verbose, forceRebuild) {
+        list(gds_path = "/tmp/x.gds", targets = "T", rebuilt = FALSE)
+    }
+    out <- analyze(dataDirectory = "D", annotationPackage = "A",
+                   .preprocess = pre, .open = function(p) "G",
+                   .close = function(g) NULL)
+    expect_identical(out$gds_path, "/tmp/x.gds")
+})
+
 # ---- analyze() staged rebuild ----------------------------------------
 #
 # `rebuild` names a stage; that stage and every stage after it rebuild (the

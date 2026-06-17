@@ -82,21 +82,18 @@
 # guarantee, and parallelism is there when RAM is not the constraint.
 gdsDasen <- function(gds, node = "normbetas", keep = NULL, fudge = 100,
                      block = 64L, BPPARAM = NULL) {
-  stopifnot(
-    "`node` must be a single non-empty string" =
-      is.character(node) && length(node) == 1L && !is.na(node) && nzchar(node),
-    "`fudge` must be a single non-negative number" =
-      is.numeric(fudge) && length(fudge) == 1L && !is.na(fudge) && fudge >= 0,
-    "`block` must be a single positive integer" =
-      is.numeric(block) && length(block) == 1L && !is.na(block) && block >= 1L
-  )
+  .check(is.character(node) && length(node) == 1L && !is.na(node) && nzchar(node),
+         "`node` must be a single non-empty string.")
+  .check(is.numeric(fudge) && length(fudge) == 1L && !is.na(fudge) && fudge >= 0,
+         "`fudge` must be a single non-negative number.")
+  .check(is.numeric(block) && length(block) == 1L && !is.na(block) && block >= 1L,
+         "`block` must be a single positive integer.")
   block <- as.integer(block)
   if (is.null(BPPARAM)) {
     BPPARAM <- SerialParam()
   } else if (!methods::is(BPPARAM, "BiocParallelParam")) {
-    stop("`BPPARAM` must be a BiocParallelParam object (e.g. ",
-         "BiocParallel::MulticoreParam()), or NULL for the serial default.",
-         call. = FALSE)
+    .userStop("`BPPARAM` must be a BiocParallelParam object (e.g. ",
+              "BiocParallel::MulticoreParam()), or NULL for the serial default.")
   }
   handle <- .gdsHandle(gds, readonly = FALSE)
   on.exit(handle$close(), add = TRUE)
@@ -106,10 +103,8 @@ gdsDasen <- function(gds, node = "normbetas", keep = NULL, fudge = 100,
   for (req in c("methylated", "unmethylated", "fData/Type")) {
     base <- strsplit(req, "/", fixed = TRUE)[[1L]][[1L]]
     if (!(base %in% present)) {
-      stop(sprintf(
-        "gdsDasen needs the `%s` node; the GDS has: %s.",
-        base, paste(present, collapse = ", ")
-      ), call. = FALSE)
+      .userStopf("gdsDasen needs the `%s` node; the GDS has: %s.",
+                 base, paste(present, collapse = ", "))
     }
   }
   meth <- gdsfmt::index.gdsn(g, "methylated")
@@ -121,19 +116,16 @@ gdsDasen <- function(gds, node = "normbetas", keep = NULL, fudge = 100,
   isI <- onetwo == "I"
   isII <- onetwo == "II"
   if (!any(isI) || !any(isII)) {
-    stop("fData/Type must contain both \"I\" and \"II\" probes for dasen.",
-         call. = FALSE)
+    .userStop("fData/Type must contain both \"I\" and \"II\" probes for dasen.")
   }
 
   if (is.null(keep)) {
     keep <- rep(TRUE, nsamp)
   }
-  stopifnot(
-    "`keep` must be a logical vector with one entry per sample" =
-      is.logical(keep) && length(keep) == nsamp,
-    "`keep` must select at least one sample for the reference" =
-      any(keep & !is.na(keep))
-  )
+  .check(is.logical(keep) && length(keep) == nsamp,
+         "`keep` must be a logical vector with one entry per sample.")
+  .check(any(keep & !is.na(keep)),
+         "`keep` must select at least one sample for the reference.")
   keep[is.na(keep)] <- FALSE
 
   nI <- sum(isI)

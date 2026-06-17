@@ -34,13 +34,12 @@
   } else if (is.character(gds) && length(gds) == 1L && !is.na(gds) &&
                nzchar(gds)) {
     if (!file.exists(gds)) {
-      stop(sprintf("GDS file \"%s\" does not exist.", gds), call. = FALSE)
+      .userStopf("GDS file \"%s\" does not exist.", gds)
     }
     handle <- gdsfmt::openfn.gds(gds, readonly = readonly)
     list(gds = handle, close = function() gdsfmt::closefn.gds(handle))
   } else {
-    stop("`gds` must be an open gds.class handle or a single GDS file path.",
-         call. = FALSE)
+    .userStop("`gds` must be an open gds.class handle or a single GDS file path.")
   }
 }
 
@@ -103,25 +102,21 @@
 # `gds` is either the open handle analyze()'s FUN receives or a path to a GDS on
 # disk; a path is opened read-only and closed before returning.
 gdsBetaMatrix <- function(gds, node = "betas", transpose = TRUE) {
-  stopifnot(
-    "`node` must be a single non-empty string" =
-      is.character(node) && length(node) == 1L && !is.na(node) && nzchar(node),
-    "`transpose` must be a single TRUE or FALSE" =
-      is.logical(transpose) && length(transpose) == 1L && !is.na(transpose)
-  )
+  .check(is.character(node) && length(node) == 1L && !is.na(node) && nzchar(node),
+         "`node` must be a single non-empty string.")
+  .check(is.logical(transpose) && length(transpose) == 1L && !is.na(transpose),
+         "`transpose` must be a single TRUE or FALSE.")
   handle <- .gdsHandle(gds)
   on.exit(handle$close(), add = TRUE)
   g <- handle$gds
 
   if (!(node %in% gdsfmt::ls.gdsn(g))) {
-    stop(sprintf(
-      "node \"%s\" is not present in the GDS (available: %s).",
-      node, paste(gdsfmt::ls.gdsn(g), collapse = ", ")
-    ), call. = FALSE)
+    .userStopf("node \"%s\" is not present in the GDS (available: %s).",
+               node, paste(gdsfmt::ls.gdsn(g), collapse = ", "))
   }
   m <- gdsfmt::read.gdsn(gdsfmt::index.gdsn(g, node))
   if (!is.matrix(m) || length(dim(m)) != 2L) {
-    stop(sprintf("node \"%s\" is not a 2-D matrix.", node), call. = FALSE)
+    .userStopf("node \"%s\" is not a 2-D matrix.", node)
   }
   m <- .applyGdsDimNames(m, .gdsDimNames(g))
   if (transpose) t(m) else m
@@ -138,10 +133,8 @@ gdsBetaMatrix <- function(gds, node = "betas", transpose = TRUE) {
 gdsSummarizedExperiment <- function(
     gds,
     assays = c("betas", "methylated", "unmethylated", "pvals")) {
-  stopifnot(
-    "`assays` must be a non-empty character vector" =
-      is.character(assays) && length(assays) >= 1L && all(nzchar(assays))
-  )
+  .check(is.character(assays) && length(assays) >= 1L && all(nzchar(assays)),
+         "`assays` must be a non-empty character vector.")
   handle <- .gdsHandle(gds)
   on.exit(handle$close(), add = TRUE)
   g <- handle$gds
@@ -149,10 +142,10 @@ gdsSummarizedExperiment <- function(
   present <- gdsfmt::ls.gdsn(g)
   wanted <- assays[assays %in% present]
   if (length(wanted) == 0L) {
-    stop(sprintf(
+    .userStopf(
       "none of the requested assay nodes (%s) are present in the GDS (available: %s).",
       paste(assays, collapse = ", "), paste(present, collapse = ", ")
-    ), call. = FALSE)
+    )
   }
 
   dn <- .gdsDimNames(g)
