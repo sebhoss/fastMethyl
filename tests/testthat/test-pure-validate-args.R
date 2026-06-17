@@ -61,7 +61,7 @@
         dataDirectory         = fx$data_dir,
         crossReactiveProbes   = fx$xreact_path,
         samplesheet           = fx$sheet_path,
-        gdsOutput             = "test.gds",
+        gdsOutput             = file.path(fx$root, "test.gds"),
         annotationPackage     = "IlluminaHumanMethylation450kanno.ilmn12.hg19",
         sampleDetPThreshold   = 0.01,
         probeDetPThreshold    = 0.01,
@@ -152,6 +152,54 @@ test_that(".validateArgs errors when samplesheet does not point to an existing f
     on.exit(unlink(fx$root, recursive = TRUE), add = TRUE)
     expect_error(.call_validate(fx, samplesheet = file.path(fx$root, "no_such_sheet.csv")),
                  regexp = "samplesheet.*existing file")
+})
+
+# ---- gdsOutput destination ------------------------------------------
+
+test_that(".validateArgs errors when gdsOutput's directory does not exist", {
+    fx <- .make_fixture()
+    on.exit(unlink(fx$root, recursive = TRUE), add = TRUE)
+    bad <- file.path(fx$root, "no_such_dir", "out.gds")
+    err <- tryCatch(.call_validate(fx, gdsOutput = bad), error = identity)
+    expect_s3_class(err, "error")
+    expect_match(conditionMessage(err), "gdsOutput")
+    expect_match(conditionMessage(err), "does not exist")
+})
+
+test_that(".validateArgs accepts a relative gdsOutput whose parent exists", {
+    fx <- .make_fixture()
+    on.exit(unlink(fx$root, recursive = TRUE), add = TRUE)
+    # A bare filename resolves against the working directory (dirname "."),
+    # which exists and is writable during the test run, so this must pass.
+    expect_silent(.call_validate(fx, gdsOutput = "relative_out.gds"))
+})
+
+test_that(".validateArgs errors when gdsOutput's directory is not writable", {
+    skip_on_os("windows")  # POSIX permission bits; root ignores them
+    skip_if(unname(Sys.info()["user"]) == "root")
+    fx <- .make_fixture()
+    on.exit(unlink(fx$root, recursive = TRUE), add = TRUE)
+    ro <- file.path(fx$root, "readonly")
+    dir.create(ro)
+    Sys.chmod(ro, mode = "0500")
+    on.exit(Sys.chmod(ro, mode = "0700"), add = TRUE)  # restore so unlink works
+    err <- tryCatch(.call_validate(fx, gdsOutput = file.path(ro, "out.gds")),
+                    error = identity)
+    expect_s3_class(err, "error")
+    expect_match(conditionMessage(err), "not writable")
+})
+
+test_that(".validateArgs errors when an input file is unreadable", {
+    skip_on_os("windows")
+    skip_if(unname(Sys.info()["user"]) == "root")
+    fx <- .make_fixture()
+    on.exit(unlink(fx$root, recursive = TRUE), add = TRUE)
+    Sys.chmod(fx$xreact_path, mode = "0000")
+    on.exit(Sys.chmod(fx$xreact_path, mode = "0600"), add = TRUE)
+    err <- tryCatch(.call_validate(fx), error = identity)
+    expect_s3_class(err, "error")
+    expect_match(conditionMessage(err), "crossReactiveProbes")
+    expect_match(conditionMessage(err), "not readable")
 })
 
 # ---- annotation package check ---------------------------------------

@@ -21,6 +21,68 @@
 # malformed, etc.) use inline `stop(sprintf(...))` so the offending
 # value appears in the message.
 
+# Internal: an existing input path must also be readable, not merely present.
+# file.access(mode = 4) tests read permission; a non-zero result means the
+# current user cannot read it (e.g. a samplesheet owned by another user).
+.assertReadable <- function(path, label) {
+  if (file.access(path, mode = 4L) != 0L) {
+    stop(
+      sprintf("`%s` (\"%s\") exists but is not readable by the current user.",
+              label, path),
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
+}
+
+# Internal: validate that `path` is a usable destination for a GDS we will
+# create (and overwrite on a rebuild). The only real failure modes are a parent
+# directory that does not exist or is not writable, so check both up front and
+# turn them into an actionable error rather than a cryptic gdsfmt write failure
+# raised deep inside the build, after IDATs have already been read.
+#
+# Relative paths are fully supported: gdsfmt resolves them against the working
+# directory like any other file, so a relative `path` is fine as long as its
+# parent exists. The error names the *resolved absolute* directory so a relative
+# path makes clear exactly where the write would have landed.
+.assertWritableTarget <- function(path, label) {
+  parent <- dirname(path)
+  if (!dir.exists(parent)) {
+    stop(
+      sprintf(
+        paste0(
+          "`%s` (\"%s\") points into a directory that does not exist:\n  %s\n",
+          "  Create the directory first, or pass a path under one that exists ",
+          "(an absolute path removes any ambiguity about the working directory)."
+        ),
+        label, path, normalizePath(parent, mustWork = FALSE)
+      ),
+      call. = FALSE
+    )
+  }
+  if (file.access(parent, mode = 2L) != 0L) {
+    stop(
+      sprintf(
+        paste0("`%s` (\"%s\"): the directory %s is not writable, so the output ",
+               "file cannot be created there."),
+        label, path, normalizePath(parent)
+      ),
+      call. = FALSE
+    )
+  }
+  if (file.exists(path) && file.access(path, mode = 2L) != 0L) {
+    stop(
+      sprintf(
+        paste0("`%s` (\"%s\") already exists but is not writable, so it cannot ",
+               "be overwritten."),
+        label, path
+      ),
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
+}
+
 # Internal: validate every pre-processing input + load the supporting
 # CSV files. Returns a list with the loaded samplesheet, resolved
 # basenames, sheet path, and the cross-reactive probes CSV. Does NOT
@@ -85,6 +147,7 @@
       call. = FALSE
     )
   }
+  .assertReadable(dataDirectory, "dataDirectory")
   if (!file.exists(crossReactiveProbes)) {
     stop(
       sprintf(
@@ -94,6 +157,13 @@
       call. = FALSE
     )
   }
+  .assertReadable(crossReactiveProbes, "crossReactiveProbes")
+
+  # `gdsOutput` is created (and overwritten on a rebuild), so validate its
+  # destination up front -- before any IDAT byte is read -- so an unwritable or
+  # non-existent output directory fails immediately with an actionable message
+  # instead of a cryptic gdsfmt error deep inside the build.
+  .assertWritableTarget(gdsOutput, "gdsOutput")
 
   # `samplesheet` is the path to the CSV itself (one row per sample, with a
   # `Basename` column). The IDAT files those basenames name are resolved under
@@ -108,6 +178,7 @@
       call. = FALSE
     )
   }
+  .assertReadable(sheetPath, "samplesheet")
 
   # --- annotation package installed ---------------------------------
   # .check_annotation is injectable so the pure tests can stub it
